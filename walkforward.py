@@ -58,6 +58,7 @@ def evaluate(parts, strategy, paper, score, candle_seconds):
                 (equities[-1] / paper["capital_usdt"] - 1) * 100,
                 max_drawdown(equities),
                 len(account.trades),
+                getattr(account, "exposure_steps", 0) / len(equities),
             )
         )
     return {
@@ -65,6 +66,7 @@ def evaluate(parts, strategy, paper, score, candle_seconds):
         "worst": min(r[0] for r in rows),
         "drawdown": min(r[1] for r in rows),
         "trades": sum(r[2] for r in rows),
+        "exposure": statistics.mean(r[3] for r in rows),
     }
 
 
@@ -80,11 +82,249 @@ def label(choice):
     )
 
 
+# A few predefined variants of the default, compared on every test month without any
+# search (so they can't be fitted to the test months).
+FIXED_VARIANTS = {
+    "default (config)": {},
+    "hold ~1 week, ignore flips": {"exit_on_flip": False, "max_hold_candles": 35},
+    "hold ~2 weeks, ignore flips": {"exit_on_flip": False, "max_hold_candles": 70},
+    "default + daily trend filter": {"trend_filter": "htf"},
+    "hold ~2 weeks + daily trend filter": {
+        "exit_on_flip": False,
+        "max_hold_candles": 70,
+        "trend_filter": "htf",
+    },
+    "hold ~1 week + 3 ATR stop": {
+        "exit_on_flip": False,
+        "max_hold_candles": 35,
+        "stop_loss_atr": 3.0,
+    },
+}
+
+ROLLING_GRID = {
+    "score": ["p", "rule"],
+    "direction": ["trend", "reversion"],
+    "thresholds": [(0.55, 0.30), (0.65, 0.20), (0.75, 0.15)],
+    "trend_filter": ["none", "htf"],
+    # (stop ATR, take ATR, max hold candles, flat at the close, exit when the signal flips)
+    "exits": [
+        (0, 0, 0, False, True),
+        (0, 0, 4, False, True),
+        (0, 0, 0, True, True),
+        (3.0, 0, 0, False, True),
+        (0, 0, 35, False, False),  # hold about a week (1h candles), ignore flips
+        (0, 0, 70, False, False),  # about two weeks
+        (3.0, 0, 70, False, False),
+    ],
+    "cooldown_candles": [1, 4],
+}
+
+
+def grid_strategies(grid, base, candle_seconds, market_kind):
+    for values in itertools.product(*grid.values()):
+        choice = dict(zip(grid, values))
+        (above, below), exits = choice["thresholds"], choice["exits"]
+        stop, take, hold = exits[:3]
+        flat = exits[3] if len(exits) > 3 else False
+        flip = exits[4] if len(exits) > 4 else True
+        market, leverage = choice.get("setup", ("spot", 1.0))
+        yield (
+            choice,
+            {
+                **base,
+                "direction": choice["direction"],
+                "enter_above": above,
+                "enter_below": below,
+                "trend_filter": choice["trend_filter"],
+                "stop_loss_atr": stop,
+                "take_profit_atr": take,
+                "max_hold_candles": hold,
+                "flat_at_close": flat,
+                "exit_on_flip": flip,
+                "market": market,
+                "max_leverage": leverage,
+                "cooldown_seconds": int(choice["cooldown_candles"] * candle_seconds),
+            },
+        )
+
+
+def describe_choice(choice):
+    (above, below), exits = choice["thresholds"], choice["exits"]
+    stop, _, hold = exits[:3]
+    flat = len(exits) > 3 and exits[3]
+    flip = exits[4] if len(exits) > 4 else True
+    parts = [
+        text
+        for ok, text in (
+            (flat, "close at session end"),
+            (hold, f"hold max {hold} candles"),
+            (stop, f"stop {stop:g} ATR"),
+            (flip, "exit on flip"),
+        )
+        if ok
+    ]
+    exit_text = ", ".join(parts)
+    who = "Laya" if choice["score"] == "p" else "votes"
+    filt = ", with daily trend" if choice["trend_filter"] == "htf" else ""
+    return f"{who} {choice['direction']} {above:.2f}/{below:.2f}{filt}, {exit_text}, cd{choice['cooldown_candles']}"
+
+
+def window(prepared, start_ms, end_ms):
+    return {
+        "steps": [s for s in prepared["steps"] if start_ms <= s["t"] < end_ms],
+        "funding": prepared["funding"],
+    }
+
+
+def rolling(args, config, market, agent, memo, prompt):
+    """Rolling walk-forward: choose on train_days, test on the next test_days, slide by
+    test_days, repeat. Every test month is data the chosen strategy never saw."""
+    if args.symbols:
+        market.symbols = [x.strip().upper() for x in args.symbols.split(",")]
+    market.interval = args.interval
+    candle_seconds = INTERVAL_MS[market.interval] / 1000
+    paper, base = paper_of(config, market), market.cfg["strategy"]
+    day = 86_400_000
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - int(args.days * day)
+    print(
+        f"Preparing {len(market.symbols)} {market.label.lower()} on {market.interval} candles, "
+        f"{args.days:g} days...",
+        file=sys.stderr,
+    )
+    prepared = {}
+    for symbol in market.symbols:
+        started = time.perf_counter()
+        try:
+            prepared[symbol] = prepare(
+                market, symbol, market.interval, start_ms, end_ms, agent, memo, prompt, quiet=True
+            )
+        except Exception as error:
+            print(f"  {symbol}: skipped ({error})", file=sys.stderr)
+            continue
+        print(
+            f"  {symbol}: {len(prepared[symbol]['steps'])} candles, "
+            f"{time.perf_counter() - started:.0f} s",
+            file=sys.stderr,
+        )
+    strategies = list(grid_strategies(ROLLING_GRID, base, candle_seconds, market.kind))
+    default = {**base, "cooldown_seconds": base["cooldown_seconds"]}
+
+    def mean_return(start, end, strategy, score):
+        parts = {k: window(v, start, end) for k, v in prepared.items()}
+        return evaluate(parts, strategy, paper, score, candle_seconds)
+
+    def hold_return(start, end):
+        values = []
+        for v in prepared.values():
+            part = window(v, start, end)
+            if part["steps"]:
+                values.append((buy_and_hold(part, paper)[-1] / paper["capital_usdt"] - 1) * 100)
+        return statistics.mean(values)
+
+    train_ms, test_ms = int(args.train_days * day), int(args.test_days * day)
+    folds, cursor = [], start_ms + train_ms
+    while cursor + test_ms <= end_ms + day:
+        folds.append((cursor - train_ms, cursor, min(cursor + test_ms, end_ms)))
+        cursor += test_ms
+    print(
+        f"\n{market.label}: {len(prepared)} assets, {len(strategies)} strategies, {len(folds)} folds "
+        f"(choose on {args.train_days:g} days, test the next {args.test_days:g}).\n"
+    )
+    print(
+        f"{'test month':<12}{'chosen on the train window':<58}{'test':>8}{'best Laya':>11}"
+        f"{'default':>9}{'hold':>8}"
+    )
+    totals = {"chosen": [], "laya": [], "default": [], "hold": []}
+    chosen_log = []
+    for train_start, test_start, test_end in folds:
+        scored = [
+            (mean_return(train_start, test_start, st, ch["score"])["return"], ch, st)
+            for ch, st in strategies
+        ]
+        scored.sort(key=lambda x: x[0], reverse=True)
+        _, best_choice, best = scored[0]
+        _, laya_choice, laya = next(x for x in scored if x[1]["score"] == "p")
+        results = {
+            "chosen": mean_return(test_start, test_end, best, best_choice["score"])["return"],
+            "laya": mean_return(test_start, test_end, laya, "p")["return"],
+            "default": mean_return(test_start, test_end, default, "p")["return"],
+            "hold": hold_return(test_start, test_end),
+        }
+        for k, v in results.items():
+            totals[k].append(v)
+        chosen_log.append(laya_choice)
+        month = time.strftime("%Y-%m-%d", time.gmtime(test_start / 1000))
+        print(
+            f"{month:<12}{describe_choice(best_choice):<58}{results['chosen']:>+7.2f}%"
+            f"{results['laya']:>+10.2f}%{results['default']:>+8.2f}%{results['hold']:>+7.2f}%"
+        )
+
+    def compound(values):
+        total = 1.0
+        for v in values:
+            total *= 1 + v / 100
+        return (total - 1) * 100
+
+    print(f"\n{'':<12}{'':<58}{'chosen':>8}{'best Laya':>11}{'default':>9}{'hold':>8}")
+    print(
+        f"{'compounded':<70}{compound(totals['chosen']):>+7.2f}%{compound(totals['laya']):>+10.2f}%"
+        f"{compound(totals['default']):>+8.2f}%{compound(totals['hold']):>+7.2f}%"
+    )
+    print(
+        f"{'months positive':<70}"
+        + "".join(
+            f"{sum(v > 0 for v in totals[k]):>{w}}/{len(totals[k])}"
+            for k, w in (("chosen", 6), ("laya", 9), ("default", 7), ("hold", 6))
+        )
+    )
+    print(
+        f"{'months beating buy & hold':<70}"
+        + "".join(
+            f"{sum(a > b for a, b in zip(totals[k], totals['hold'])):>{w}}/{len(totals[k])}"
+            for k, w in (("chosen", 6), ("laya", 9), ("default", 7))
+        )
+    )
+    counts = {}
+    for choice in chosen_log:
+        counts[describe_choice(choice)] = counts.get(describe_choice(choice), 0) + 1
+    print("\nPredefined variants on the same test months (no search involved):")
+    print(f"{'variant':<40}{'compounded':>12}{'months +':>10}{'beat hold':>11}{'in market':>11}")
+    for name, change in FIXED_VARIANTS.items():
+        strategy = {**base, **change}
+        returns, exposure = [], []
+        for _, test_start, test_end in folds:
+            result = mean_return(test_start, test_end, strategy, "p")
+            returns.append(result["return"])
+            exposure.append(result["exposure"])
+        beat = sum(a > b for a, b in zip(returns, totals["hold"]))
+        print(
+            f"{name:<40}{compound(returns):>+11.2f}%{sum(v > 0 for v in returns):>8}/{len(returns)}"
+            f"{beat:>9}/{len(returns)}{statistics.mean(exposure) * 100:>10.0f}%"
+        )
+    hold_positive = sum(v > 0 for v in totals["hold"])
+    print(
+        f"{'buy & hold':<40}{compound(totals['hold']):>+11.2f}%{hold_positive:>8}/{len(folds)}{'':>11}{100:>10}%"
+    )
+
+    print("\nBest Laya strategy per train window (how stable the choice is):")
+    for text, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+        print(f"  {n:>2} x {text}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--config", type=Path, default=HERE / "config.toml")
     parser.add_argument("--markets", help="Comma-separated: crypto,stocks (default: all)")
     parser.add_argument("--top", type=int, default=8)
+    parser.add_argument(
+        "--rolling", action="store_true", help="Rolling walk-forward over many months"
+    )
+    parser.add_argument("--interval", default="1h", help="Candle size for --rolling (default 1h)")
+    parser.add_argument("--days", type=float, default=365, help="Total history for --rolling")
+    parser.add_argument("--train-days", type=float, default=90)
+    parser.add_argument("--test-days", type=float, default=30)
+    parser.add_argument("--symbols", help="Comma-separated symbols for --rolling (default: config)")
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
     markets = load_markets(config)
@@ -92,6 +332,10 @@ def main():
         markets = [m for m in markets if m.kind in {x.strip() for x in args.markets.split(",")}]
     agent, memo, prompt = load_agent(config["model"]), {}, prompt_of(config)
     end_ms = int(time.time() * 1000)
+    if args.rolling:
+        for market in markets:
+            rolling(args, config, market, agent, memo, prompt)
+        return 0
 
     for market in markets:
         train_days, test_days = DEFAULT_DAYS[market.kind]

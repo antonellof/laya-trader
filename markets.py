@@ -338,6 +338,10 @@ class Stocks:
             else None,
             "sentiment": extras.get("sentiment"),
             "headlines": (extras.get("headlines") or {}).get(symbol),
+            # Live: the session ends within one candle. Backtests mark each day's last
+            # candle instead (see backtest.prepare).
+            "closes_soon": bool(self.session)
+            and 0 <= self.session[1] - now_ms / 1000 < INTERVAL_MS[self.interval] / 1000,
         }
 
     # History ------------------------------------------------------------------------------

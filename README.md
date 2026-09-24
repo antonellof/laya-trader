@@ -9,6 +9,7 @@ An experiment: every second, [Laya MLX](https://github.com/mizorewww/laya-mlx) r
 uv run python backtest.py --days 7     # historical replay of every market, writes backtest.html
 uv run python promptlab.py             # which prompt makes Laya's P most predictive
 uv run python walkforward.py           # which strategy holds up on data it never saw
+uv run python walkforward.py --rolling --markets stocks   # a year of monthly out-of-sample tests
 ```
 
 Needs an Apple Silicon Mac and [uv](https://docs.astral.sh/uv/). The Laya checkpoint (~650 MB) downloads on first run.
@@ -30,7 +31,7 @@ Everything comes from public endpoints, with no account needed.
 | | Crypto (`[crypto]`) | Stocks (`[stocks]`) |
 |---|---|---|
 | Default assets | BTC, ETH, SOL | AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, XOM |
-| Candles | Binance spot, every round | Yahoo Finance chart API, every `poll_seconds` (15 s) |
+| Candles | Binance spot 15m, every round | Yahoo Finance chart API 1h, every `poll_seconds` (30 s) |
 | Trading hours | 24/7 | regular US session only; outside it: HOLD "market closed" |
 | Higher timeframe | 4h candles | daily candles |
 | Futures data | funding, open interest, long/short ratio, taker buy/sell ratio | – |
@@ -39,7 +40,7 @@ Everything comes from public endpoints, with no account needed.
 | Fees (paper) | 0.1% per side | 0.02% per side (approximates the spread) |
 | Optional, live only | Whale Alert transfers, CoinJournal headlines | Yahoo Finance headlines per symbol |
 
-Yahoo's chart API is public but unofficial, so stocks are polled every 15 seconds rather than every second. Requests reuse open HTTPS connections. A round for all 11 assets takes about 0.3 s (median) to fetch. Laya's answers are cached by sentence, so an unchanged market doesn't run the model again. If one asset fails, only that asset is skipped.
+Yahoo's chart API is public but unofficial, so stocks are polled every 30 seconds rather than every second. Requests reuse open HTTPS connections. A round for all 11 assets takes about 0.3 s (median) to fetch. Laya's answers are cached by sentence, so an unchanged market doesn't run the model again. If one asset fails, only that asset is skipped.
 
 ### 2. Signals
 
@@ -120,8 +121,9 @@ Each market has its own `[<market>.strategy]`.
 | open position, losses would eat the margin (futures) | CLOSE (liquidated) |
 | stop-loss or take-profit level touched (if set) | CLOSE |
 | open longer than `max_hold_candles` (if set) | CLOSE (time exit) |
+| stocks with `flat_at_close`: last candle before the session ends | CLOSE (session close) |
 | last trade on this asset less than `cooldown_seconds` ago | HOLD (cooldown) |
-| open position and the signal points the other way | CLOSE (signal flipped) |
+| open position and the signal points the other way (unless `exit_on_flip = false`) | CLOSE (signal flipped) |
 | flat and bullish (and with the higher-timeframe trend, if `trend_filter = "htf"`) | LONG |
 | flat and bearish, `market = "futures"` (same filter) | SHORT |
 | anything else | HOLD |
@@ -243,6 +245,55 @@ These two are the defaults in `config.toml`. On the same 30-day crypto window as
 - **No stop loss** means an open position is exposed to a crash until the signal flips. The tested alternative with stops did worse, but a crash was not in the sample.
 - Rerun `promptlab.py` and `walkforward.py` on fresh data before trusting any setting.
 
+## Stocks: a year of out-of-sample tests
+
+Fifteen-minute stock history only goes back about 60 days, too short to trust. Yahoo keeps two years of hourly candles, so `walkforward.py --rolling` tests on **1h candles over a year**, using **20 large S&P 500 names**:
+
+- AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, XOM, BRK-B, V
+- UNH, JNJ, PG, HD, MA, COST, LLY, AVGO, WMT, KO
+
+Each fold picks the best of 336 strategies on 90 days and tests it on the next 30, then slides a month forward: **9 unseen test months** in total. The grid now also includes closing before the session ends, holding for one or two weeks while ignoring signal flips, and stop + time exits.
+
+Results (Dec 2025 – Sep 2026, average across the 20 stocks):
+
+| Variant | Compounded over 9 months | Months positive | Worst month | Time in market |
+|---|---|---|---|---|
+| **Default: Laya reversion 0.55/0.30, exit on flip, 4h cooldown** | **+5.0%** | 7/9 | **−0.7%** | 68% |
+| Same, re-picked every month from the 336 | +2.1% | 6/9 | – | – |
+| Same strategy with trend votes instead of Laya | +3.6% | 6/9 | −0.3% | 47% |
+| Hold ~1 week + 3 ATR stop | +4.2% | 5/9 | – | 57% |
+| Hold ~2 weeks, ignore flips | +3.1% | 5/9 | – | 68% |
+| Default + daily trend filter | +1.4% | 5/9 | – | 36% |
+| Stay long, step aside when P ≥ 0.85 | +4.7% | 5/9 | −1.6% | 90% |
+| Buy & hold | +12.2% | 7/9 | −4.3% | 100% |
+
+- **The default is the best active variant.** None of the ideas to hold longer, filter by trend or stay invested improved on it. Those ideas came from reasoning about stocks and from the earlier crypto lessons, and all were tested on the same unseen months. The "stay long" one was proposed after seeing the first results, so it's exploratory.
+- **Re-picking every month is worse than a fixed rule.** Choosing the month's best strategy chases noise.
+- **Laya adds value over plain rules:** +5.0% vs +3.6% on the same strategy.
+- **With 1% risk it doesn't come close to buy & hold.** It trades about 60% of the rally's return for losing much less in down months. In February, buy & hold lost 4.3% and the default 0.7%; in May, −1.9% vs 0.0%.
+
+**Position size was the real bottleneck.** With no stop, a trade is sized as if its stop were 3 ATR away. On hourly stock candles that gave positions of only about 0.5× equity, so even good calls earned half. Same 9 test months, only the risk per trade changed:
+
+| Variant | Compounded | Months beating buy & hold | Worst month |
+|---|---|---|---|
+| Default, risk 1% (positions ~0.5×) | +5.0% | 2/9 | −0.7% |
+| Default, risk 2% | +9.4% | 3/9 | −1.4% |
+| **Default, risk 3% (full size, capped at 1×)** | **+10.3%** | **5/9** | **−1.6%** |
+| Rules only, risk 3% | +8.2% | 5/9 | −0.7% |
+| Buy & hold | +12.2% | – | −4.3% |
+
+At full size, the Laya strategy gets close to buy & hold's return, beats it in 5 of 9 months, and its worst month is about a third as bad, while in the market 68% of the time. This changes only how much to buy, not when, so it's hard to overfit. **`stocks.strategy.risk_pct` is now 3.0.**
+
+Because this is what was validated, live stocks now use **1h candles** (they were on 15m). A 6-month backtest of the 8 default stocks on 1h candles:
+
+| | Laya, risk 1% | **Laya, risk 3% (default)** | Rules only, risk 3% | Buy & hold |
+|---|---|---|---|---|
+| Average return | +5.8% | **+13.1%** | +5.5% | +21.4% |
+| Average max drawdown | – | **−12.9%** | −10.7% | −18.2% |
+| Worst max drawdown | −5.4% | −16.1% | −15.6% | −24.2% |
+
+At full size, Laya beats rules only on 6 of 8 stocks and buy & hold on 1 of 8 (XOM). It earns about 60% of buy & hold's return with about 70% of its drawdown. Larger positions mean larger swings: the worst drawdown went from −5.4% to −16.1%.
+
 ## Configuration (`config.toml`)
 
 | Key | Default | Meaning |
@@ -252,17 +303,19 @@ These two are the defaults in `config.toml`. On the same 30-day crypto window as
 | `paper.capital_usdt` | 1000 | paper balance per asset |
 | `prompt.question` / `format` | *outlook* / good_bad | what Laya is asked, and how the sentence is worded |
 | `<market>.symbols` | see above | assets (crypto quoted in USDT) |
-| `<market>.kline_interval` | 15m | candle size: 1m, 5m, 15m, 1h |
+| `<market>.kline_interval` | 15m crypto, 1h stocks | candle size: 1m, 5m, 15m, 1h |
 | `<market>.fee_pct` | 0.1 crypto, 0.02 stocks | fee per side, in percent |
-| `stocks.benchmark` / `poll_seconds` | SPY / 15 | relative-strength benchmark, Yahoo polling rate |
+| `stocks.benchmark` / `poll_seconds` | SPY / 30 | relative-strength benchmark, Yahoo polling rate |
 | `<market>.strategy.market` | spot | `spot` (long only) or `futures` (long + short, leverage, funding) |
 | `<market>.strategy.direction` | reversion | `trend` or `reversion` |
 | `<market>.strategy.enter_above` / `enter_below` | 0.75/0.15 crypto, 0.55/0.30 stocks | P(bullish) thresholds |
 | `<market>.strategy.trend_filter` | none | `htf`: only trade with the higher-timeframe trend |
-| `<market>.strategy.risk_pct` | 1.0 | % of equity at risk per trade; sets the size |
+| `<market>.strategy.risk_pct` | 1.0 crypto, 3.0 stocks | % of equity at risk per trade; sets the size (capped by leverage) |
 | `<market>.strategy.max_leverage` | 3 crypto, 1 stocks | size cap (futures only) |
 | `<market>.strategy.stop_loss_atr` / `take_profit_atr` | 0 / 0 | exits in ATR14 from the entry; 0 = off |
 | `<market>.strategy.max_hold_candles` | 0 | time exit; 0 = off |
+| `<market>.strategy.exit_on_flip` | true | close when the signal turns the other way |
+| `<market>.strategy.flat_at_close` | false | stocks: close before the session ends, no overnight positions |
 | `<market>.strategy.cooldown_seconds` | 14400 | minimum time between trades on one asset |
 | `context.whale_alerts` / `news` | false / false | live-only sources |
 | `refresh.*` | 60 / 600 / 300 s | refresh rates of the slow sources |

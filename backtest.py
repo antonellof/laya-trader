@@ -73,6 +73,10 @@ def prepare(market, symbol, interval, start_ms, end_ms, agent, memo, prompt, qui
                 "rule": 1.0 if votes >= 2 else 0.0 if votes <= -2 else 0.5,
             }
         )
+    if market.kind == "stocks":  # mark the last candle of each session
+        days = [datetime.fromtimestamp(st["t"] / 1000, timezone.utc).date() for st in steps]
+        for step, day, next_day in zip(steps, days, days[1:] + [None]):
+            step["s"]["closes_soon"] = next_day is not None and next_day != day
     if not quiet:
         print(f"  {symbol}: {len(steps)} candles, {calls} new Laya calls", file=sys.stderr)
     return {"steps": steps, "funding": history["funding"]}
@@ -94,6 +98,7 @@ def simulate(prepared, strategy, paper, score_key="p", record=False, candle_seco
         trade = account.apply(action, reason, fill, s, now)
         equity = account.equity(s["price"])
         equities.append(equity)
+        account.exposure_steps = getattr(account, "exposure_steps", 0) + bool(account.position)
         if record and trade:
             detail = {
                 "signals": s,
@@ -183,6 +188,8 @@ def setup_text(strategy, interval):
     extra = []
     if strategy.get("trend_filter", "none") != "none":
         extra.append("only with the higher-timeframe trend")
+    if strategy.get("flat_at_close"):
+        extra.append("flat at the close")
     if strategy.get("max_hold_candles"):
         extra.append(f"exit after {strategy['max_hold_candles']} candles")
     return ", ".join(

@@ -213,6 +213,7 @@ def compute_signals(klines, ctx):
         "relative_strength": ctx.get("relative_strength"),
         "whales": ctx.get("whales"),
         "headlines": ctx.get("headlines"),
+        "closes_soon": bool(ctx.get("closes_soon")),  # last candle before the session ends
         "votes": trend_votes(price, ema20, ema20_htf, ema50_htf, macd_value, rsi14, atr14),
     }
 
@@ -540,14 +541,18 @@ class Account:
                 return "CLOSE", "take profit", take
             if take is not None and held["side"] < 0 and low <= take:
                 return "CLOSE", "take profit", take
+            if st.get("flat_at_close") and s.get("closes_soon"):
+                return "CLOSE", "session close", price
             max_hold = st.get("max_hold_candles", 0)
             if max_hold and now - held["opened"] >= max_hold * self.candle_seconds:
                 return "CLOSE", "time exit", price
         direction = signal(score, st)
         if now - self.last_trade < st["cooldown_seconds"]:
             return "HOLD", "cooldown", price
-        if held and direction == -held["side"]:
+        if held and direction == -held["side"] and st.get("exit_on_flip", True):
             return "CLOSE", "signal flipped", price
+        if st.get("flat_at_close") and s.get("closes_soon"):
+            return "HOLD", "session closing", price
         # Higher-timeframe trend filter: only buy dips in an uptrend, only short in a downtrend.
         htf_trend = s["votes"][1]  # +1 EMA20 above EMA50 on the higher timeframe, -1 below
         with_trend = st.get("trend_filter", "none") == "none"

@@ -35,9 +35,9 @@ cooldown_seconds = 14400          # minimum time between two trades on one asset
 [stocks]
 symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "JPM", "XOM"]
 benchmark = "SPY"                 # for relative strength
-kline_interval = "15m"
+kline_interval = "1h"             # the candle size validated over a year (walkforward.py --rolling)
 fee_pct = 0.02                    # commission-free brokers; this approximates the spread
-poll_seconds = 15                 # Yahoo is unofficial: refresh candles every 15 s, not every second
+poll_seconds = 30                 # Yahoo is unofficial, and hourly candles need no faster polling
 
 [stocks.strategy]                 # best Laya strategy in walkforward.py (see README)
 market = "spot"                   # long only (shorting stocks needs a margin account)
@@ -45,7 +45,7 @@ direction = "reversion"
 enter_above = 0.55
 enter_below = 0.30
 trend_filter = "none"             # "htf": only trade with the daily trend (EMA20 vs EMA50)
-risk_pct = 1.0
+risk_pct = 3.0                    # full-size positions (capped at 1x): tested best over a year
 max_leverage = 1.0
 stop_loss_atr = 0
 take_profit_atr = 0
