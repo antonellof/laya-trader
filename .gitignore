@@ -2,3 +2,4 @@
 __pycache__/
 logs/
 backtest.html
+.DS_Store
