@@ -27,11 +27,16 @@ def value_at(series, t):
     return series[i - 1][1] if i else None
 
 
-def completed(rows, t, n):
-    """The last n candles that closed before time t."""
-    closes = [r[6] for r in rows]
-    i = bisect_right(closes, t)
-    return rows[max(0, i - n) : i]
+class Candles:
+    """Candles with their close times indexed, for fast 'closed before t' lookups."""
+
+    def __init__(self, rows):
+        self.rows, self.closes = rows, [r[6] for r in rows]
+
+    def before(self, t, n):
+        """The last n candles that closed before time t."""
+        i = bisect_right(self.closes, t)
+        return self.rows[max(0, i - n) : i]
 
 
 # --- Crypto: Binance ------------------------------------------------------------------------
@@ -204,6 +209,7 @@ class Crypto:
         except Exception:
             fng = []
         oi_times = [t for t, _ in stats["oi"]]
+        k4h, k1h, k1d = Candles(k4h), Candles(k1h), Candles(k1d)
 
         def ctx_at(close_ms):
             known = close_ms - FIVE_MINUTES  # 5-minute statistics: only periods already over
@@ -211,9 +217,9 @@ class Crypto:
             sentiment = value_at(fng, close_ms)
             return {
                 "htf_label": "4h",
-                "k_htf": completed(k4h, close_ms, 60),
-                "k1h": completed(k1h, close_ms, 25),
-                "k1d": completed(k1d, close_ms, 1),
+                "k_htf": k4h.before(close_ms, 60),
+                "k1h": k1h.before(close_ms, 25),
+                "k1d": k1d.before(close_ms, 1),
                 "funding": value_at(funding, close_ms),
                 "long_short": value_at(stats["long_short"], known),
                 "oi": [v for _, v in stats["oi"][max(0, upto - 13) : upto]],
@@ -366,17 +372,20 @@ class Stocks:
         )
         bench_close = [(r[6], r[4]) for r in bench]
 
+        fast_c, bench_daily_c, hourly_c = Candles(fast), Candles(bench_daily), Candles(hourly)
+        day_opens = [d[0] for d in daily]
+
         def ctx_at(close_ms):
-            upto = [k for k in fast if k[6] < close_ms]
-            prev_days = [d for d in bench_daily if d[6] < close_ms - 12 * HOUR_MS]
+            upto = fast_c.before(close_ms, 100)
+            prev_days = bench_daily_c.before(close_ms - 12 * HOUR_MS, 1)
             b_now = value_at(bench_close, close_ms)
             b_change = (
                 (b_now / prev_days[-1][4] - 1) * 100 if b_now is not None and prev_days else None
             )
             ctx = self._ctx(
-                upto[-100:] or fast[:1],
-                [d for d in daily if d[0] < close_ms],
-                hourly,
+                upto or fast[:1],
+                daily[: bisect_right(day_opens, close_ms - 1)][-70:],
+                hourly_c.before(close_ms, 30),
                 close_ms,
                 {"benchmark_change": b_change},
             )

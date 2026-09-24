@@ -10,6 +10,7 @@ uv run python backtest.py --days 7     # historical replay of every market, writ
 uv run python promptlab.py             # which prompt makes Laya's P most predictive
 uv run python walkforward.py           # which strategy holds up on data it never saw
 uv run python walkforward.py --rolling --markets stocks   # a year of monthly out-of-sample tests
+uv run python walkforward.py --rolling --no-search --variants risk --days 700 --markets stocks   # stop-loss comparison
 ```
 
 Needs an Apple Silicon Mac and [uv](https://docs.astral.sh/uv/). The Laya checkpoint (~650 MB) downloads on first run.
@@ -31,7 +32,7 @@ Everything comes from public endpoints, with no account needed.
 | | Crypto (`[crypto]`) | Stocks (`[stocks]`) |
 |---|---|---|
 | Default assets | BTC, ETH, SOL | AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, XOM |
-| Candles | Binance spot 15m, every round | Yahoo Finance chart API 1h, every `poll_seconds` (30 s) |
+| Candles | Binance spot 1h, every round | Yahoo Finance chart API 1h, every `poll_seconds` (30 s) |
 | Trading hours | 24/7 | regular US session only; outside it: HOLD "market closed" |
 | Higher timeframe | 4h candles | daily candles |
 | Futures data | funding, open interest, long/short ratio, taker buy/sell ratio | – |
@@ -44,7 +45,7 @@ Yahoo's chart API is public but unofficial, so stocks are polled every 30 second
 
 ### 2. Signals
 
-- **Fast candles** (`kline_interval`, default 15m):
+- **Fast candles** (`kline_interval`, default 1h):
   - EMA20
   - MACD, and whether it's rising or falling
   - RSI14 and RSI7 (Wilder)
@@ -128,7 +129,20 @@ Each market has its own `[<market>.strategy]`.
 | flat and bearish, `market = "futures"` (same filter) | SHORT |
 | anything else | HOLD |
 
-**Position size comes from risk, not from the model.** A trade is sized so that hitting the stop loses `risk_pct` of equity; with no stop, it's sized as if the stop were 3 ATR away. The size is then capped at `max_leverage` × equity on futures and 1× on spot. Futures also pay or receive funding at 00:00, 08:00 and 16:00 UTC and can be liquidated.
+**Position size comes from risk, not from the model:** size = equity × `risk_pct` ÷ (`sizing_atr` × ATR14). The size is then capped at `max_leverage` × equity on futures and 1× on spot. Stops don't change the size, so turning a stop on or off only changes the exits. Futures also pay or receive funding at 00:00, 08:00 and 16:00 UTC and can be liquidated.
+
+**Protection options** (per market, all off when 0):
+
+| Option | What it does |
+|---|---|
+| `stop_loss_atr`, `stop_loss_pct` | fixed stop from the entry, in ATR or percent; if both are set, the nearer one wins |
+| `trailing_stop_atr` | a stop that follows the best price since entry, and only ever tightens |
+| `breakeven_after_atr` | once the trade is this far in profit, the stop moves up to the entry |
+| `loss_cooldown_seconds` | no new entry for this long after a losing trade |
+| `max_entry_atr_ratio` | no new entry while short-term volatility (ATR3/ATR14) is above this |
+| `pause_drawdown_pct`, `pause_seconds` | circuit breaker: after equity falls this far below its peak, no new entries for a while |
+
+In backtests, stops trigger on the candle's high/low. A candle that *opens* beyond the stop (an overnight gap, for example) fills at its open, not at the stop, because that's what a real stop order would get. Which options help is in [Stop losses](#stop-losses-and-protection-two-years-of-evidence).
 
 **Could Laya pick the size or the leverage?** Only if a bigger P meant a bigger move, and it doesn't: P's rank correlation with the next move is ±0.1 at best, and its sign changes between periods (see below). Size stays a risk rule; leverage stays a cap you choose.
 
@@ -237,7 +251,9 @@ Result on 24 Sept 2026:
 | Buy & hold, unseen part | +8.6% | +3.0% |
 | Same Laya strategy with shorts (futures) | −6.3% on the unseen part | – |
 
-These two are the defaults in `config.toml`. On the same 30-day crypto window as the run above they give −4.0% (BTC), +17.5% (ETH), +7.6% (SOL), versus −26.7%, −17.7% and −11.7% before. That window overlaps the one used to choose them, though, so the unseen-part numbers are the honest ones.
+> **Update:** the year-long tests below overturned the crypto part of this. Over 9 unseen months this crypto strategy lost 27–31%, so crypto now uses a different setup (see [Stop losses](#stop-losses-and-protection-two-years-of-evidence)). The 10-day +1.2% was luck.
+
+These two were the defaults at that point. On the same 30-day crypto window as the run above they give −4.0% (BTC), +17.5% (ETH), +7.6% (SOL), versus −26.7%, −17.7% and −11.7% before. That window overlaps the one used to choose them, though, so the unseen-part numbers are the honest ones.
 
 **The honest conclusion:**
 - The changes turned heavy losses into small out-of-sample gains, with smaller drawdowns than holding. In rising markets, they still trail buy & hold.
@@ -294,6 +310,47 @@ Because this is what was validated, live stocks now use **1h candles** (they wer
 
 At full size, Laya beats rules only on 6 of 8 stocks and buy & hold on 1 of 8 (XOM). It earns about 60% of buy & hold's return with about 70% of its drawdown. Larger positions mean larger swings: the worst drawdown went from −5.4% to −16.1%.
 
+## Stop losses and protection: two years of evidence
+
+`walkforward.py --rolling --no-search --variants risk` runs the market's default strategy on every test month, once with each protection option. Sizing is identical in all variants, so any difference comes from the exits alone. The test windows include real crashes: the April 2025 tariff selloff (stocks) and the October 2025 liquidation cascade (crypto).
+
+**Stocks:** 20 names, 1h candles, 20 test months (Dec 2024 – Sep 2026).
+
+| Variant | Compounded | Worst month | Worst drawdown (one stock) | Worst trade |
+|---|---|---|---|---|
+| **No stop (default)** | **+19.6%** | −3.8% | −28.9% | −20.3% |
+| Stop 8% from entry | +15.3% | −6.5% | −27.2% | −18.2% |
+| Stop 5% from entry | +13.7% | −5.8% | −27.0% | −18.0% |
+| Stop 4 ATR | +13.5% | −4.9% | −27.7% | −18.0% |
+| Trailing stop 6 ATR | +14.5% | −4.4% | −26.6% | −18.2% |
+| Breakeven after 2 ATR + stop 8% | +16.6% | −5.9% | −27.2% | −18.2% |
+| No entries when volatility spikes | +19.4% | −3.7% | −28.9% | −20.3% |
+| Pause 3 days after a 5% drawdown | +17.5% | −4.9% | −28.9% | −20.3% |
+| Buy & hold | +25.7% | −5.5% | −41.5% | – |
+
+**Every stop made stocks worse.** Returns fell 3–9 points, and even the worst month got deeper, because stops sold dips at the low and missed the rebound the strategy buys them for. Stops barely changed the worst trade (−20% → −18%): the big single-stock losses are **overnight gaps** after news or earnings, where the price opens far below any stop. **Stocks keep no stop.** The protection that actually limits single-stock gap risk is holding several stocks with smaller positions each, not a price stop.
+
+**Crypto:** BTC/ETH/SOL, 9 test months (Dec 2025 – Sep 2026).
+
+The earlier crypto default (15m, reversion, flip exit) lost **−30.8%** over the year, against −9.2% for buy & hold. On 15-minute candles, every stop made it worse (−33% to −56%): many small stop-outs on top of about 7% a month in fees. The loss cooldown and the drawdown pause softened the worst month (from −17% to −12%) but not the year.
+
+On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & hold lost 8.7%. They picked "hold at most ~3 days" 9 of 9 times and "only with the 4h trend" 8 of 9 times. Tested as **fixed** strategies on the same months (mild hindsight, since the pattern came from those picks):
+
+| Variant (1h, 9 months) | Compounded | Worst month | Worst drawdown |
+|---|---|---|---|
+| Old crypto default | −27.4% | −18.6% | −27.5% |
+| Reversion 0.55/0.30, with 4h trend, hold ≤ 3 days | −6.7% | −4.4% | −8.2% |
+| … + stop 4 ATR | −7.8% | −2.5% | −5.8% |
+| Reversion 0.65/0.20, with 4h trend, hold ≤ 3 days | −2.3% | −3.7% | −8.5% |
+| Trend 0.65/0.20, with 4h trend, hold ≤ 3 days | +0.4% | −3.6% | −8.9% |
+| **… + stop 4 ATR (new default)** | **+0.5%** | **−3.3%** | **−8.3%** |
+| … same, trend votes instead of Laya (`signal = "votes"`) | **+8.6%** | −2.3% | −7.4% |
+| Buy & hold | −8.7% | −30.3% | −41.5% |
+
+- **What fixed crypto was structure, not the stop.** Hourly candles, trading only with the 4h trend, and a 3-day time limit took a −27% year to about flat. The worst month went from −18.6% to −3.3%, while buy & hold's worst was −30%.
+- **On crypto a 4 ATR stop helps a little.** Without overnight gaps, stops fill near their level: similar return, a slightly better worst month. **Crypto now uses it.**
+- **On crypto, the plain trend votes did better than Laya** with the same structure (+8.6% vs +0.5%). It's one comparison on the same months, so it's not proof, but it matches the prompt lab: Laya's crypto signal isn't stable. Set `signal = "votes"` under `[crypto.strategy]` to trade on the votes; Laya's reading still shows on the dashboard.
+
 ## Configuration (`config.toml`)
 
 | Key | Default | Meaning |
@@ -303,17 +360,24 @@ At full size, Laya beats rules only on 6 of 8 stocks and buy & hold on 1 of 8 (X
 | `paper.capital_usdt` | 1000 | paper balance per asset |
 | `prompt.question` / `format` | *outlook* / good_bad | what Laya is asked, and how the sentence is worded |
 | `<market>.symbols` | see above | assets (crypto quoted in USDT) |
-| `<market>.kline_interval` | 15m crypto, 1h stocks | candle size: 1m, 5m, 15m, 1h |
+| `<market>.kline_interval` | 1h | candle size: 1m, 5m, 15m, 1h |
 | `<market>.fee_pct` | 0.1 crypto, 0.02 stocks | fee per side, in percent |
 | `stocks.benchmark` / `poll_seconds` | SPY / 30 | relative-strength benchmark, Yahoo polling rate |
 | `<market>.strategy.market` | spot | `spot` (long only) or `futures` (long + short, leverage, funding) |
-| `<market>.strategy.direction` | reversion | `trend` or `reversion` |
-| `<market>.strategy.enter_above` / `enter_below` | 0.75/0.15 crypto, 0.55/0.30 stocks | P(bullish) thresholds |
-| `<market>.strategy.trend_filter` | none | `htf`: only trade with the higher-timeframe trend |
+| `<market>.strategy.signal` | laya | `laya`, or `votes` to trade on the four trend votes |
+| `<market>.strategy.direction` | trend crypto, reversion stocks | `trend` or `reversion` |
+| `<market>.strategy.enter_above` / `enter_below` | 0.65/0.20 crypto, 0.55/0.30 stocks | P(bullish) thresholds |
+| `<market>.strategy.trend_filter` | htf crypto, none stocks | `htf`: only trade with the higher-timeframe trend |
 | `<market>.strategy.risk_pct` | 1.0 crypto, 3.0 stocks | % of equity at risk per trade; sets the size (capped by leverage) |
 | `<market>.strategy.max_leverage` | 3 crypto, 1 stocks | size cap (futures only) |
-| `<market>.strategy.stop_loss_atr` / `take_profit_atr` | 0 / 0 | exits in ATR14 from the entry; 0 = off |
-| `<market>.strategy.max_hold_candles` | 0 | time exit; 0 = off |
+| `<market>.strategy.sizing_atr` | 3.0 | size = equity × risk_pct ÷ (sizing_atr × ATR14) |
+| `<market>.strategy.stop_loss_atr` / `take_profit_atr` | 4 / 0 crypto, 0 / 0 stocks | exits in ATR14 from the entry; 0 = off |
+| `<market>.strategy.stop_loss_pct` | 0 | fixed stop in percent from the entry |
+| `<market>.strategy.trailing_stop_atr` / `breakeven_after_atr` | 0 / 0 | trailing stop, move stop to entry after this profit |
+| `<market>.strategy.loss_cooldown_seconds` | 0 | no new entry for this long after a loss |
+| `<market>.strategy.max_entry_atr_ratio` | 0 | no new entry while ATR3/ATR14 is above this |
+| `<market>.strategy.pause_drawdown_pct` / `pause_seconds` | 0 / 259200 | circuit breaker on equity drawdown |
+| `<market>.strategy.max_hold_candles` | 70 crypto, 0 stocks | time exit (70 × 1h ≈ 3 days); 0 = off |
 | `<market>.strategy.exit_on_flip` | true | close when the signal turns the other way |
 | `<market>.strategy.flat_at_close` | false | stocks: close before the session ends, no overnight positions |
 | `<market>.strategy.cooldown_seconds` | 14400 | minimum time between trades on one asset |

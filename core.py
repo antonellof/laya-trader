@@ -176,6 +176,7 @@ def compute_signals(klines, ctx):
     oi = ctx.get("oi") or []
     return {
         "price": price,
+        "open": float(klines[-1][1]),
         "high": float(klines[-1][2]),
         "low": float(klines[-1][3]),
         "ema20": ema20,
@@ -496,8 +497,17 @@ class Account:
     spot:    long only, no leverage.
     futures: long and short, leverage up to max_leverage, funding every 8 hours,
              liquidation if losses eat the margin.
-    Size comes from risk, not from the model: a stop-loss hit costs risk_pct of equity,
-    so size = equity x risk_pct / stop distance, capped by the leverage limit.
+    Size comes from risk, not from the model: size = equity x risk_pct / (sizing_atr x
+    ATR14), capped by the leverage limit. Stops only protect; they don't change the size.
+
+    Protection, each optional (0 / off by default):
+      stop_loss_atr, stop_loss_pct   fixed stop from the entry (the nearer one wins)
+      trailing_stop_atr              stop follows the best price since entry
+      breakeven_after_atr            once this far in profit, the stop moves to the entry
+      loss_cooldown_seconds          no new entry for this long after a losing trade
+      max_entry_atr_ratio            no new entry while ATR3 / ATR14 is above this
+      pause_drawdown_pct, pause_seconds   circuit breaker: after equity falls this far
+                                     below its peak, no new entries for pause_seconds
     """
 
     MAINTENANCE = 0.005  # maintenance margin, share of notional
@@ -511,6 +521,8 @@ class Account:
         self.last_trade = float("-inf")
         self.trades = []
         self.funding_paid = 0.0
+        self.peak = self.start
+        self.blocked_until, self.blocked_reason = float("-inf"), ""
 
     @property
     def futures(self):
@@ -526,17 +538,31 @@ class Account:
         high/low: the candle's range, so a backtest sees stops touched inside the candle.
         The live loop checks the current price every round instead."""
         st, held, price = self.strategy, self.position, s["price"]
+        in_candle = high is not None  # backtest: the whole candle is known
         high = price if high is None else high
         low = price if low is None else low
+        opened_at = s.get("open", price) if in_candle else price
+        equity = self.equity(price)
+        self.peak = max(self.peak, equity)
+        pause = st.get("pause_drawdown_pct", 0)
+        if pause and not held and equity < self.peak * (1 - pause / 100):
+            # Circuit breaker: stop opening trades for a while, then start from here.
+            self.blocked_until = now + st.get("pause_seconds", 86_400)
+            self.blocked_reason, self.peak = "drawdown pause", equity
         if held:
             worst = low if held["side"] > 0 else high
             if self.equity(worst) <= self.MAINTENANCE * held["qty"] * worst:
                 return "CLOSE", "liquidated", worst
-            stop, take = held["stop"], held["take"]
+            stop, reason = self._stop(held)
+            take = held["take"]
+            # A candle that opens beyond the stop (a gap) fills at its open, not the stop.
             if stop is not None and held["side"] > 0 and low <= stop:
-                return "CLOSE", "stop loss", stop
+                return "CLOSE", reason, min(stop, opened_at)
             if stop is not None and held["side"] < 0 and high >= stop:
-                return "CLOSE", "stop loss", stop
+                return "CLOSE", reason, max(stop, opened_at)
+            # The best price since entry is updated after the stop check, so a candle
+            # never raises its own trailing stop.
+            held["best"] = max(held["best"], high) if held["side"] > 0 else min(held["best"], low)
             if take is not None and held["side"] > 0 and high >= take:
                 return "CLOSE", "take profit", take
             if take is not None and held["side"] < 0 and low <= take:
@@ -549,6 +575,11 @@ class Account:
         direction = signal(score, st)
         if now - self.last_trade < st["cooldown_seconds"]:
             return "HOLD", "cooldown", price
+        if not held and now < self.blocked_until:
+            return "HOLD", self.blocked_reason, price
+        max_ratio = st.get("max_entry_atr_ratio", 0)
+        if not held and direction and max_ratio and s["atr_ratio"] > max_ratio:
+            return "HOLD", "too volatile", price
         if held and direction == -held["side"] and st.get("exit_on_flip", True):
             return "CLOSE", "signal flipped", price
         if st.get("flat_at_close") and s.get("closes_soon"):
@@ -566,16 +597,39 @@ class Account:
             return "SHORT", "bearish" if st["direction"] == "trend" else "overbought", price
         return "HOLD", "no signal", price
 
+    def _stop(self, held):
+        """The active stop and its name: fixed, trailing or breakeven, whichever is
+        closest to the price (a stop only ever tightens)."""
+        side, atr_entry = held["side"], held["atr"]
+        candidates = []
+        if held["stop"] is not None:
+            candidates.append((held["stop"], "stop loss"))
+        trail = self.strategy.get("trailing_stop_atr", 0)
+        if trail:
+            candidates.append((held["best"] - side * trail * atr_entry, "trailing stop"))
+        breakeven = self.strategy.get("breakeven_after_atr", 0)
+        if breakeven and side * (held["best"] - held["entry"]) >= breakeven * atr_entry:
+            candidates.append((held["entry"], "breakeven stop"))
+        if not candidates:
+            return None, None
+        pick = max if side > 0 else min
+        return pick(candidates, key=lambda c: c[0])
+
     def apply(self, action, reason, price, s, now):
         if action == "HOLD":
             return None
         st = self.strategy
         if action in ("LONG", "SHORT"):
             equity = self.balance
-            # Size from the stop distance; with no stop, size as if it were 3 ATR away.
-            stop_atr = st["stop_loss_atr"] or 3.0
-            stop_distance = max(stop_atr * s["atr14"], price * 0.001)
-            qty = equity * st["risk_pct"] / 100 / stop_distance
+            sizing = max(st.get("sizing_atr", 3.0) * s["atr14"], price * 0.001)
+            qty = equity * st["risk_pct"] / 100 / sizing
+            distances = []  # fixed stops: ATR-based and/or percentage, the nearer one wins
+            if st["stop_loss_atr"]:
+                distances.append(st["stop_loss_atr"] * s["atr14"])
+            if st.get("stop_loss_pct"):
+                distances.append(price * st["stop_loss_pct"] / 100)
+            has_stop = bool(distances)
+            stop_distance = min(distances) if distances else None
             max_leverage = st["max_leverage"] if self.futures else 1.0
             qty = min(qty, equity * max_leverage / price * (1 - self.fee))
             side = 1 if action == "LONG" else -1
@@ -584,12 +638,14 @@ class Account:
                 "side": side,
                 "qty": qty,
                 "entry": price,
-                "stop": price - side * stop_distance if st["stop_loss_atr"] else None,
+                "stop": price - side * stop_distance if has_stop else None,
                 "take": price + side * st["take_profit_atr"] * s["atr14"]
                 if st["take_profit_atr"]
                 else None,
                 "leverage": qty * price / equity,
                 "opened": now,
+                "atr": s["atr14"],
+                "best": price,
             }
             trade = {"qty": qty, "notional": qty * price, "leverage": qty * price / equity}
         else:  # CLOSE
@@ -599,6 +655,10 @@ class Account:
             self.balance = max(self.balance + pnl - fee, 0.0)
             self.position = None
             trade = {"qty": held["qty"], "notional": held["qty"] * price, "pnl": pnl - fee}
+            loss_cooldown = st.get("loss_cooldown_seconds", 0)
+            if loss_cooldown and pnl - fee < 0:
+                self.blocked_until = max(self.blocked_until, now + loss_cooldown)
+                self.blocked_reason = "cooling off after a loss"
         self.last_trade = now
         trade.update(action=action, reason=reason, price=price, at=now)
         self.trades.append(trade)

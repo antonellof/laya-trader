@@ -302,6 +302,9 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
         answer, reused = laya(state)
         calls += not reused
         p = answer["p"]
+        if market.cfg["strategy"].get("signal") == "votes":  # rules instead of Laya
+            votes = sum(s["votes"])
+            p = 1.0 if votes >= 2 else 0.0 if votes <= -2 else 0.5
         if s.get("funding") is not None:
             for _ in funding_times_between(previous_ms, t_ms):
                 account.pay_funding(s["funding"], s["price"])

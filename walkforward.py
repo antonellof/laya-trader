@@ -59,6 +59,10 @@ def evaluate(parts, strategy, paper, score, candle_seconds):
                 max_drawdown(equities),
                 len(account.trades),
                 getattr(account, "exposure_steps", 0) / len(equities),
+                min(
+                    (t["pnl"] / paper["capital_usdt"] * 100 for t in account.trades if "pnl" in t),
+                    default=0.0,
+                ),
             )
         )
     return {
@@ -67,6 +71,7 @@ def evaluate(parts, strategy, paper, score, candle_seconds):
         "drawdown": min(r[1] for r in rows),
         "trades": sum(r[2] for r in rows),
         "exposure": statistics.mean(r[3] for r in rows),
+        "worst_trade": min((r[4] for r in rows), default=0.0),
     }
 
 
@@ -98,6 +103,26 @@ FIXED_VARIANTS = {
         "exit_on_flip": False,
         "max_hold_candles": 35,
         "stop_loss_atr": 3.0,
+    },
+}
+
+# Protection variants on top of the market's default strategy. Sizing is the same in all
+# of them (sizing_atr), so any difference comes from the exits and entry filters alone.
+RISK_VARIANTS = {
+    "current (no stop)": {},
+    "stop 5% from entry": {"stop_loss_pct": 5},
+    "stop 8% from entry (crash only)": {"stop_loss_pct": 8},
+    "stop 4 ATR": {"stop_loss_atr": 4},
+    "trailing stop 3 ATR": {"trailing_stop_atr": 3},
+    "trailing stop 6 ATR": {"trailing_stop_atr": 6},
+    "breakeven after 2 ATR + stop 8%": {"breakeven_after_atr": 2, "stop_loss_pct": 8},
+    "1-day cooldown after a loss": {"loss_cooldown_seconds": 86_400},
+    "no entries when ATR3/ATR14 > 2": {"max_entry_atr_ratio": 2},
+    "pause 3 days after a 5% drawdown": {"pause_drawdown_pct": 5, "pause_seconds": 259_200},
+    "stop 8% + trailing 6 ATR + no volatile entries": {
+        "stop_loss_pct": 8,
+        "trailing_stop_atr": 6,
+        "max_entry_atr_ratio": 2,
     },
 }
 
@@ -207,7 +232,11 @@ def rolling(args, config, market, agent, memo, prompt):
             f"{time.perf_counter() - started:.0f} s",
             file=sys.stderr,
         )
-    strategies = list(grid_strategies(ROLLING_GRID, base, candle_seconds, market.kind))
+    strategies = (
+        []
+        if args.no_search
+        else list(grid_strategies(ROLLING_GRID, base, candle_seconds, market.kind))
+    )
     default = {**base, "cooldown_seconds": base["cooldown_seconds"]}
 
     def mean_return(start, end, strategy, score):
@@ -227,17 +256,37 @@ def rolling(args, config, market, agent, memo, prompt):
     while cursor + test_ms <= end_ms + day:
         folds.append((cursor - train_ms, cursor, min(cursor + test_ms, end_ms)))
         cursor += test_ms
+
+    def compound(values):
+        total = 1.0
+        for v in values:
+            total *= 1 + v / 100
+        return (total - 1) * 100
+
+    def hold_drawdown(start, end):
+        values = []
+        for v in prepared.values():
+            part = window(v, start, end)
+            if part["steps"]:
+                values.append(max_drawdown(buy_and_hold(part, paper)))
+        return min(values)
+
     print(
-        f"\n{market.label}: {len(prepared)} assets, {len(strategies)} strategies, {len(folds)} folds "
-        f"(choose on {args.train_days:g} days, test the next {args.test_days:g}).\n"
-    )
-    print(
-        f"{'test month':<12}{'chosen on the train window':<58}{'test':>8}{'best Laya':>11}"
-        f"{'default':>9}{'hold':>8}"
+        f"\n{market.label}: {len(prepared)} assets, {len(folds)} test months "
+        f"(each after {args.train_days:g} days of history)."
     )
     totals = {"chosen": [], "laya": [], "default": [], "hold": []}
     chosen_log = []
+    if strategies:
+        print(
+            f"Monthly re-choice among {len(strategies)} strategies:\n\n"
+            f"{'test month':<12}{'chosen on the train window':<58}{'test':>8}{'best Laya':>11}"
+            f"{'default':>9}{'hold':>8}"
+        )
     for train_start, test_start, test_end in folds:
+        totals["hold"].append(hold_return(test_start, test_end))
+        if not strategies:
+            continue
         scored = [
             (mean_return(train_start, test_start, st, ch["score"])["return"], ch, st)
             for ch, st in strategies
@@ -249,7 +298,6 @@ def rolling(args, config, market, agent, memo, prompt):
             "chosen": mean_return(test_start, test_end, best, best_choice["score"])["return"],
             "laya": mean_return(test_start, test_end, laya, "p")["return"],
             "default": mean_return(test_start, test_end, default, "p")["return"],
-            "hold": hold_return(test_start, test_end),
         }
         for k, v in results.items():
             totals[k].append(v)
@@ -257,59 +305,55 @@ def rolling(args, config, market, agent, memo, prompt):
         month = time.strftime("%Y-%m-%d", time.gmtime(test_start / 1000))
         print(
             f"{month:<12}{describe_choice(best_choice):<58}{results['chosen']:>+7.2f}%"
-            f"{results['laya']:>+10.2f}%{results['default']:>+8.2f}%{results['hold']:>+7.2f}%"
+            f"{results['laya']:>+10.2f}%{results['default']:>+8.2f}%{totals['hold'][-1]:>+7.2f}%"
+        )
+    if strategies:
+        print(f"\n{'':<70}{'chosen':>8}{'best Laya':>11}{'default':>9}{'hold':>8}")
+        print(
+            f"{'compounded':<70}{compound(totals['chosen']):>+7.2f}%"
+            f"{compound(totals['laya']):>+10.2f}%{compound(totals['default']):>+8.2f}%"
+            f"{compound(totals['hold']):>+7.2f}%"
         )
 
-    def compound(values):
-        total = 1.0
-        for v in values:
-            total *= 1 + v / 100
-        return (total - 1) * 100
-
-    print(f"\n{'':<12}{'':<58}{'chosen':>8}{'best Laya':>11}{'default':>9}{'hold':>8}")
+    variants = FIXED_VARIANTS if args.variants == "strategy" else RISK_VARIANTS
+    print(f"\nPredefined {args.variants} variants on every test month (no search involved):")
     print(
-        f"{'compounded':<70}{compound(totals['chosen']):>+7.2f}%{compound(totals['laya']):>+10.2f}%"
-        f"{compound(totals['default']):>+8.2f}%{compound(totals['hold']):>+7.2f}%"
+        f"{'variant':<48}{'compounded':>11}{'months +':>10}{'beat hold':>10}{'worst month':>13}"
+        f"{'worst DD':>10}{'worst trade':>13}{'in market':>11}"
     )
-    print(
-        f"{'months positive':<70}"
-        + "".join(
-            f"{sum(v > 0 for v in totals[k]):>{w}}/{len(totals[k])}"
-            for k, w in (("chosen", 6), ("laya", 9), ("default", 7), ("hold", 6))
-        )
-    )
-    print(
-        f"{'months beating buy & hold':<70}"
-        + "".join(
-            f"{sum(a > b for a, b in zip(totals[k], totals['hold'])):>{w}}/{len(totals[k])}"
-            for k, w in (("chosen", 6), ("laya", 9), ("default", 7))
-        )
-    )
-    counts = {}
-    for choice in chosen_log:
-        counts[describe_choice(choice)] = counts.get(describe_choice(choice), 0) + 1
-    print("\nPredefined variants on the same test months (no search involved):")
-    print(f"{'variant':<40}{'compounded':>12}{'months +':>10}{'beat hold':>11}{'in market':>11}")
-    for name, change in FIXED_VARIANTS.items():
+    for name, change in variants.items():
         strategy = {**base, **change}
-        returns, exposure = [], []
+        returns, exposure, drawdowns, worst_trades = [], [], [], []
         for _, test_start, test_end in folds:
             result = mean_return(test_start, test_end, strategy, "p")
             returns.append(result["return"])
             exposure.append(result["exposure"])
-        beat = sum(a > b for a, b in zip(returns, totals["hold"]))
+            drawdowns.append(result["drawdown"])
+            worst_trades.append(result["worst_trade"])
+        beat = sum(x > y for x, y in zip(returns, totals["hold"]))
         print(
-            f"{name:<40}{compound(returns):>+11.2f}%{sum(v > 0 for v in returns):>8}/{len(returns)}"
-            f"{beat:>9}/{len(returns)}{statistics.mean(exposure) * 100:>10.0f}%"
+            f"{name:<48}{compound(returns):>+10.2f}%{sum(v > 0 for v in returns):>7}/{len(returns)}"
+            f"{beat:>7}/{len(returns)}{min(returns):>+12.2f}%{min(drawdowns):>+9.2f}%"
+            f"{min(worst_trades):>+12.2f}%{statistics.mean(exposure) * 100:>10.0f}%"
         )
-    hold_positive = sum(v > 0 for v in totals["hold"])
+    hold_dd = min(hold_drawdown(ts, te) for _, ts, te in folds)
     print(
-        f"{'buy & hold':<40}{compound(totals['hold']):>+11.2f}%{hold_positive:>8}/{len(folds)}{'':>11}{100:>10}%"
+        f"{'buy & hold':<48}{compound(totals['hold']):>+10.2f}%"
+        f"{sum(v > 0 for v in totals['hold']):>7}/{len(folds)}{'':>10}"
+        f"{min(totals['hold']):>+12.2f}%{hold_dd:>+9.2f}%{'':>13}{100:>10}%"
+    )
+    print(
+        "\nworst DD: the deepest drawdown of any single asset within a test month. "
+        "worst trade: the biggest loss on one trade, as % of that asset's capital."
     )
 
-    print("\nBest Laya strategy per train window (how stable the choice is):")
-    for text, n in sorted(counts.items(), key=lambda kv: -kv[1]):
-        print(f"  {n:>2} x {text}")
+    if chosen_log:
+        counts = {}
+        for choice in chosen_log:
+            counts[describe_choice(choice)] = counts.get(describe_choice(choice), 0) + 1
+        print("\nBest Laya strategy per train window (how stable the choice is):")
+        for text, n in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print(f"  {n:>2} x {text}")
 
 
 def main():
@@ -325,6 +369,15 @@ def main():
     parser.add_argument("--train-days", type=float, default=90)
     parser.add_argument("--test-days", type=float, default=30)
     parser.add_argument("--symbols", help="Comma-separated symbols for --rolling (default: config)")
+    parser.add_argument(
+        "--variants",
+        choices=("strategy", "risk"),
+        default="strategy",
+        help="Predefined variants to compare in --rolling",
+    )
+    parser.add_argument(
+        "--no-search", action="store_true", help="--rolling: skip the grid, only compare variants"
+    )
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
     markets = load_markets(config)

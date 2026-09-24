@@ -190,6 +190,20 @@ def setup_text(strategy, interval):
         extra.append("only with the higher-timeframe trend")
     if strategy.get("flat_at_close"):
         extra.append("flat at the close")
+    if strategy.get("stop_loss_pct"):
+        extra.append(f"stop {strategy['stop_loss_pct']:g}%")
+    if strategy.get("stop_loss_atr"):
+        extra.append(f"stop {strategy['stop_loss_atr']:g} ATR")
+    if strategy.get("trailing_stop_atr"):
+        extra.append(f"trailing stop {strategy['trailing_stop_atr']:g} ATR")
+    if strategy.get("breakeven_after_atr"):
+        extra.append(f"breakeven after {strategy['breakeven_after_atr']:g} ATR")
+    if strategy.get("max_entry_atr_ratio"):
+        extra.append("no entries in extreme volatility")
+    if strategy.get("loss_cooldown_seconds"):
+        extra.append(f"{strategy['loss_cooldown_seconds'] / 3600:g}h pause after a loss")
+    if strategy.get("pause_drawdown_pct"):
+        extra.append(f"pause after a {strategy['pause_drawdown_pct']:g}% drawdown")
     if strategy.get("max_hold_candles"):
         extra.append(f"exit after {strategy['max_hold_candles']} candles")
     return ", ".join(

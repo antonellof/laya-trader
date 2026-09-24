@@ -15,21 +15,31 @@ format = "good_bad"               # "good_bad" or "lists"
 # --- Crypto: Binance public data, trades 24/7 -----------------------------------------------
 [crypto]
 symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
-kline_interval = "15m"            # candle size for the indicators
+kline_interval = "1h"             # 15m traded too often: fees ate the returns over a year
 fee_pct = 0.1                     # per side, in percent (spot taker 0.1%, futures ~0.05%)
 
-[crypto.strategy]                 # best Laya strategy in walkforward.py (see README)
+[crypto.strategy]                 # a year of monthly out-of-sample tests (see README)
+signal = "laya"                   # "laya" or "votes" (the four trend votes; did better on crypto)
 market = "spot"                   # "spot": long only, 1x   |   "futures": long + short, leverage
-direction = "reversion"           # "trend": long when bullish   |   "reversion": long when oversold
-enter_above = 0.75                # P(bullish) at or above: bullish signal
-enter_below = 0.15                # P(bullish) at or below: bearish signal
-trend_filter = "none"             # "htf": only trade with the higher-timeframe trend (4h EMA20 vs EMA50)
+direction = "trend"               # "trend": long when bullish   |   "reversion": long when oversold
+enter_above = 0.65                # P(bullish) at or above: bullish signal
+enter_below = 0.20                # P(bullish) at or below: bearish signal
+trend_filter = "htf"              # "htf": only trade with the higher-timeframe trend (4h EMA20 vs EMA50)
 risk_pct = 1.0                    # equity lost if the stop is hit; sets the position size
 max_leverage = 3.0                # cap on position size / equity (futures only)
-stop_loss_atr = 0                 # stop distance in ATR14 from entry; 0 = no stop
+stop_loss_atr = 4                 # stop distance in ATR14 from entry; 0 = no stop
 take_profit_atr = 0               # take-profit distance in ATR14; 0 = none
-max_hold_candles = 0              # close after this many candles; 0 = no time limit
+max_hold_candles = 70             # close after this many candles (70 x 1h = ~3 days); 0 = off
 cooldown_seconds = 14400          # minimum time between two trades on one asset
+# Protection (0 = off). Stops don't change the position size; sizing_atr does.
+sizing_atr = 3.0                  # size = equity x risk_pct / (sizing_atr x ATR14), capped
+stop_loss_pct = 0                 # fixed stop, % below/above the entry
+trailing_stop_atr = 0             # stop that follows the best price since entry
+breakeven_after_atr = 0           # once this far in profit, the stop moves to the entry
+loss_cooldown_seconds = 0         # no new entry for this long after a losing trade
+max_entry_atr_ratio = 0           # no new entry while ATR3 / ATR14 is above this
+pause_drawdown_pct = 0            # circuit breaker: no new entries after equity falls this far
+pause_seconds = 259200            # ... for this long
 
 # --- Stocks: S&P 500 names via Yahoo Finance, regular US session only -----------------------
 [stocks]
@@ -39,7 +49,8 @@ kline_interval = "1h"             # the candle size validated over a year (walkf
 fee_pct = 0.02                    # commission-free brokers; this approximates the spread
 poll_seconds = 30                 # Yahoo is unofficial, and hourly candles need no faster polling
 
-[stocks.strategy]                 # best Laya strategy in walkforward.py (see README)
+[stocks.strategy]                 # a year of monthly out-of-sample tests (see README)
+signal = "laya"                   # "laya" or "votes"
 market = "spot"                   # long only (shorting stocks needs a margin account)
 direction = "reversion"
 enter_above = 0.55
@@ -51,6 +62,15 @@ stop_loss_atr = 0
 take_profit_atr = 0
 max_hold_candles = 0
 cooldown_seconds = 14400
+# Protection (0 = off). Stops don't change the position size; sizing_atr does.
+sizing_atr = 3.0                  # size = equity x risk_pct / (sizing_atr x ATR14), capped
+stop_loss_pct = 0                 # fixed stop, % below/above the entry
+trailing_stop_atr = 0             # stop that follows the best price since entry
+breakeven_after_atr = 0           # once this far in profit, the stop moves to the entry
+loss_cooldown_seconds = 0         # no new entry for this long after a losing trade
+max_entry_atr_ratio = 0           # no new entry while ATR3 / ATR14 is above this
+pause_drawdown_pct = 0            # circuit breaker: no new entries after equity falls this far
+pause_seconds = 259200            # ... for this long
 
 [context]                         # live-only sources: no history, so backtests can't include them
 whale_alerts = false              # large transfers onto / off exchanges (Whale Alert, crypto)
