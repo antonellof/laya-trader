@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Laya Trader</title>
+<style>
+:root {
+  --bg: #f5f4f0; --panel: #ffffff; --ink: #1b1a18; --muted: #6d6a63; --line: #e3e0d8; --chip: #efede7;
+  --up: #1f8a4c; --down: #d0342c; --laya: #d9480f; --laya-soft: 217, 72, 15; --rules: #7048e8; --hold: #8a8580;
+  --price: #1b1a18; --grid: rgba(0, 0, 0, 0.06);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #111110; --panel: #1a1a19; --ink: #ecebe7; --muted: #9b978f; --line: #2b2a28; --chip: #252422;
+    --up: #40c074; --down: #ff6b5f; --laya: #ff7a3d; --laya-soft: 255, 122, 61; --rules: #9775fa; --hold: #8a8580;
+    --price: #ecebe7; --grid: rgba(255, 255, 255, 0.06);
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #111110; --panel: #1a1a19; --ink: #ecebe7; --muted: #9b978f; --line: #2b2a28; --chip: #252422;
+  --up: #40c074; --down: #ff6b5f; --laya: #ff7a3d; --laya-soft: 255, 122, 61; --rules: #9775fa; --hold: #8a8580;
+  --price: #ecebe7; --grid: rgba(255, 255, 255, 0.06);
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif; }
+.wrap { max-width: 1320px; margin: 0 auto; padding: 22px 16px 48px; }
+header { display: flex; flex-wrap: wrap; gap: 10px 20px; align-items: baseline; justify-content: space-between; }
+h1 { margin: 0; font-size: 21px; letter-spacing: -0.01em; }
+.badge { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--chip); color: var(--muted); }
+.badge.live::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--up); animation: pulse 1.2s infinite; }
+@keyframes pulse { 50% { opacity: .25; } }
+.meta { color: var(--muted); font-size: 12.5px; }
+.note { color: var(--muted); font-size: 12.5px; margin: 6px 0 0; max-width: 100ch; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 14px; margin-top: 14px; min-width: 0; }
+.coin-head { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: baseline; }
+.coin-head h2 { margin: 0; font-size: 18px; }
+.price { font-size: 20px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.pill { font-size: 12px; font-weight: 700; padding: 3px 10px; border-radius: 6px; color: #fff; }
+.pill.LONG, .pill.BUY { background: var(--up); } .pill.SHORT { background: var(--down); }
+.pill.CLOSE, .pill.SELL { background: var(--price); color: var(--bg); } .pill.HOLD { background: var(--hold); }
+.grid { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); gap: 14px; margin-top: 10px; }
+@media (max-width: 900px) { .grid { grid-template-columns: 1fr; } }
+.chart { position: relative; }
+.chart canvas { display: block; width: 100%; }
+.chart .label { position: absolute; left: 8px; top: 4px; font-size: 11.5px; color: var(--muted); pointer-events: none; }
+.tip { position: absolute; pointer-events: none; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; padding: 4px 7px; font-size: 11.5px; font-variant-numeric: tabular-nums; white-space: nowrap; display: none; z-index: 2; }
+.stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.stat { background: var(--chip); border-radius: 8px; padding: 7px 10px; min-width: 0; }
+.stat b { display: block; font-size: 16px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stat span { color: var(--muted); font-size: 11.5px; }
+.read { margin-top: 10px; font-size: 12.5px; background: var(--chip); border-radius: 8px; padding: 8px 10px; }
+.read .good { color: var(--up); } .read .bad { color: var(--down); }
+.gauge { position: relative; height: 12px; border-radius: 6px; margin-top: 8px; background: linear-gradient(90deg, rgba(208,52,44,.35), var(--chip) 45%, rgba(31,138,76,.35)); }
+.gauge i { position: absolute; top: -3px; width: 4px; height: 18px; border-radius: 2px; background: var(--laya); transform: translateX(-2px); }
+.gauge .mark { position: absolute; top: 0; width: 1px; height: 12px; background: var(--muted); }
+table { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; font-size: 13px; }
+th, td { text-align: right; padding: 7px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+th:first-child, td:first-child, th:nth-child(2), td:nth-child(2) { text-align: left; }
+th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.pos { color: var(--up); } .neg { color: var(--down); }
+.legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend span { display: inline-flex; align-items: center; gap: 5px; }
+.sw { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
+.tablewrap { overflow-x: auto; }
+.log { margin-top: 12px; border-top: 1px solid var(--line); padding-top: 10px; }
+.log-head { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; justify-content: space-between; }
+.log-head h3 { margin: 0; font-size: 13.5px; }
+.seg { display: inline-flex; }
+.seg button { font: inherit; font-size: 12px; color: var(--ink); background: var(--chip); border: 1px solid var(--line); padding: 3px 10px; cursor: pointer; margin-left: -1px; }
+.seg button:first-child { border-radius: 6px 0 0 6px; margin-left: 0; }
+.seg button:last-child { border-radius: 0 6px 6px 0; }
+.seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.logbox { max-height: 560px; overflow: auto; margin-top: 8px; border: 1px solid var(--line); border-radius: 8px; }
+.logbox table { font-size: 12px; }
+.logbox th { position: sticky; top: 0; background: var(--panel); z-index: 1; }
+.logbox td, .logbox th { padding: 5px 8px; }
+.logbox td.read-cell { text-align: left; white-space: normal; min-width: 280px; }
+.logbox .good { color: var(--up); } .logbox .bad { color: var(--down); }
+.logbox .pill { font-size: 10.5px; padding: 1px 7px; }
+.logbox tr.trade td { background: rgba(var(--laya-soft), .07); }
+a.dl { font-size: 12px; color: var(--muted); }
+.logbox tbody tr[data-t] { cursor: pointer; }
+.logbox tbody tr[data-t]:hover td { background: var(--chip); }
+.logbox tbody tr.open td { background: var(--chip); }
+.logbox td .caret { display: inline-block; width: 10px; color: var(--muted); }
+.logbox tr.detail > td { padding: 0; background: var(--bg) !important; cursor: default; text-align: left; white-space: normal; }
+.detail-box { padding: 12px; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
+@media (max-width: 900px) { .detail-box { grid-template-columns: 1fr; } }
+.detail-box h4 { margin: 0 0 6px; font-size: 12px; color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: .04em; }
+.detail-box .full { grid-column: 1 / -1; }
+.detail-box pre { margin: 0; padding: 8px 10px; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; font: 11.5px/1.45 ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-word; max-height: 260px; overflow: auto; }
+.detail-box dl { margin: 0; display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; font-size: 12px; }
+.detail-box dt { color: var(--muted); } .detail-box dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-word; }
+.detail-box .copy { font: inherit; font-size: 11.5px; padding: 2px 8px; border-radius: 5px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; float: right; }
+nav { display: flex; gap: 4px; margin-bottom: 12px; }
+nav a { font-size: 13px; color: var(--muted); text-decoration: none; padding: 4px 12px; border-radius: 999px; border: 1px solid var(--line); background: var(--chip); }
+nav a[aria-current="page"] { background: var(--ink); color: var(--bg); border-color: var(--ink); }
+.runbar { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; }
+.runbar input { font: inherit; width: 70px; padding: 4px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: var(--ink); }
+.runbar button { font: inherit; padding: 5px 14px; border-radius: 6px; border: 1px solid var(--ink); background: var(--ink); color: var(--bg); cursor: pointer; }
+.runbar button:disabled { opacity: .5; cursor: default; }
+.runlog { margin: 8px 0 0; font: 11.5px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 120px; overflow: auto; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav id="nav" hidden><a href="/" data-p="live">Live</a><a href="/backtest" data-p="backtest">Backtest</a></nav>
+  <header>
+    <div>
+      <h1 id="title">Laya Trader</h1>
+      <p class="note">Laya MLX reads technical, order-flow and sentiment signals and returns P(bullish). A strategy layer turns it into LONG / SHORT / CLOSE / HOLD, sizes the position from risk and caps leverage. Paper positions only; nothing is sent to an exchange. Not financial advice.</p>
+    </div>
+    <div style="text-align:right"><span class="badge" id="mode">…</span> <span class="meta" id="timing"></span><div class="meta" id="setup"></div></div>
+  </header>
+  <section class="card" id="runner" hidden>
+    <div class="runbar">
+      <strong style="font-size:14px">Run a backtest</strong>
+      <label class="meta">days <input id="days" type="number" min="0.05" max="30" step="0.5" value="1"></label>
+      <button id="run">Run</button>
+      <span class="meta" id="run-status"></span>
+    </div>
+    <div class="runlog" id="run-log" hidden></div>
+  </section>
+  <section class="card" id="summary" hidden>
+    <h2 style="margin:0 0 6px;font-size:15px">Backtest summary</h2>
+    <div class="tablewrap"><table>
+      <thead><tr><th>Coin</th><th>Strategy</th><th>Return</th><th>Max drawdown</th><th>Trades</th><th>Win rate</th></tr></thead>
+      <tbody id="summary-rows"></tbody>
+    </table></div>
+    <p class="note">Same candles, fees and stop rules for all three. “Rules only” runs the same strategy with the four trend votes in place of Laya (sum ≥ +2 bullish, ≤ −2 bearish); comparing it with Laya shows what the model adds. A single short window is noise, not evidence: run several periods before drawing conclusions.</p>
+  </section>
+  <div id="coins"></div>
+</div>
+
+<script>
+const DATA = /*__DATA__*/null;
+const $ = (id) => document.getElementById(id);
+const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const fmt = (v, d = 2) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
+const pct = (v) => v == null ? "–" : `${v >= 0 ? "+" : ""}${fmt(v, 2)}%`;
+const priceFmt = (v) => fmt(v, v >= 1000 ? 2 : v >= 1 ? 4 : 6);
+const timeFmt = (t, withDate) => new Date(t).toLocaleString(undefined, withDate
+  ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
+  : { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+let state = null;
+const cards = {};
+
+function card(coin) {
+  if (cards[coin]) return cards[coin];
+  const el = document.createElement("section");
+  el.className = "card";
+  const backtest = state.mode === "backtest";
+  el.innerHTML = `
+    <div class="coin-head"><h2>${coin}/USDT</h2><span class="price" data-k="price">–</span><span class="pill HOLD" data-k="action">–</span><span class="meta" data-k="reason"></span></div>
+    <div class="grid">
+      <div>
+        <div class="chart"><canvas data-c="price" data-h="230" style="height:230px"></canvas><span class="label">Price · ▲ long · ▼ short · ● close</span><div class="tip"></div></div>
+        <div class="chart" style="margin-top:6px"><canvas data-c="p" data-h="90" style="height:90px"></canvas><span class="label">Laya P(bullish) · bullish ≥ ${state.rules.enter_above} · bearish ≤ ${state.rules.enter_below} · ${state.rules.direction}</span></div>
+        ${backtest ? `<div class="chart" style="margin-top:6px"><canvas data-c="eq" data-h="130" style="height:130px"></canvas><span class="label">Return %</span></div>
+        <div class="legend"><span><i class="sw" style="background:var(--laya)"></i>Laya</span><span><i class="sw" style="background:var(--rules)"></i>Rules only</span><span><i class="sw" style="background:var(--hold)"></i>Buy &amp; hold</span></div>` : ""}
+      </div>
+      <div>
+        <div class="stats">
+          <div class="stat"><b data-k="p">–</b><span>P(bullish)</span></div>
+          <div class="stat"><b data-k="equity">–</b><span>paper equity</span></div>
+          <div class="stat"><b data-k="position">–</b><span>position</span></div>
+          <div class="stat"><b data-k="trades">–</b><span>trades</span></div>
+        </div>
+        <div class="gauge"><span class="mark" style="left:${state.rules.enter_below * 100}%"></span><span class="mark" style="left:${state.rules.enter_above * 100}%"></span><i data-k="gauge" style="left:50%"></i></div>
+        <div class="read" data-k="read">${backtest ? "Hover the price chart to inspect any candle." : "Waiting for the first decision…"}</div>
+      </div>
+    </div>
+    <div class="log">
+      <div class="log-head">
+        <h3>Decision log <span class="meta" data-k="logcount"></span></h3>
+        <span>${backtest ? "" : `<span class="seg" role="group" aria-label="Filter"><button data-f="trades">Trades</button><button data-f="changes" aria-pressed="true">Changes</button><button data-f="all">All</button></span>
+          <a class="dl" href="/decisions.jsonl" download>download saved log</a>`}</span>
+      </div>
+      <div class="logbox"><table><thead><tr><th>Time</th><th>Action</th><th>Price</th><th>P(bullish)</th><th>Reason</th><th style="text-align:left">What Laya read</th><th>Equity</th></tr></thead><tbody data-k="log"></tbody></table></div>
+    </div>`;
+  $("coins").appendChild(el);
+  const q = (k) => el.querySelector(`[data-k="${k}"]`);
+  const c = { el, q, canvases: Object.fromEntries([...el.querySelectorAll("canvas")].map((x) => [x.dataset.c, x])), hover: null };
+  const priceCanvas = c.canvases.price, tip = el.querySelector(".tip");
+  priceCanvas.addEventListener("mousemove", (e) => { c.hover = e.offsetX / priceCanvas.clientWidth; draw(coin); });
+  priceCanvas.addEventListener("mouseleave", () => { c.hover = null; tip.style.display = "none"; draw(coin); });
+  c.tip = tip;
+  c.filter = backtest ? "all" : "changes";
+  c.open = new Set(); c.details = {};
+  q("log").addEventListener("click", (e) => {
+    const tr = e.target.closest("tr[data-t]");
+    if (tr && !e.target.closest(".copy")) toggleDetail(coin, +tr.dataset.t);
+  });
+  el.querySelectorAll(".seg button").forEach((b) => b.addEventListener("click", () => {
+    c.filter = b.dataset.f; c.logKey = null;
+    el.querySelectorAll(".seg button").forEach((x) => x.setAttribute("aria-pressed", x === b));
+    renderLog(coin);
+  }));
+  cards[coin] = c;
+  return c;
+}
+
+function setup(canvas) {
+  const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = +canvas.dataset.h;
+  if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) { canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr); }
+  const g = canvas.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+  return { g, w, h };
+}
+
+// One chart primitive: lines over a shared time axis, optional bands and markers.
+function plot(canvas, xs, series, opts = {}) {
+  const { g, w, h } = setup(canvas);
+  const pad = { l: 8, r: 64, t: 20, b: opts.axis ? 18 : 6 };
+  const all = series.flatMap((s) => s.values).filter((v) => v != null && isFinite(v));
+  let lo = opts.min ?? Math.min(...all), hi = opts.max ?? Math.max(...all);
+  if (!(hi > lo)) { hi = lo + 1; lo -= 1; }
+  const span = hi - lo; if (opts.min == null) { lo -= span * 0.06; hi += span * 0.06; }
+  const t0 = xs[0], t1 = xs[xs.length - 1] || t0 + 1;
+  const X = (t) => pad.l + ((t - t0) / Math.max(t1 - t0, 1)) * (w - pad.l - pad.r);
+  const Y = (v) => pad.t + (1 - (v - lo) / (hi - lo)) * (h - pad.t - pad.b);
+  g.font = "11px -apple-system, sans-serif"; g.fillStyle = css("--muted"); g.strokeStyle = css("--grid"); g.lineWidth = 1;
+  for (let i = 0; i <= 3; i++) {
+    const v = lo + ((hi - lo) * i) / 3, y = Y(v);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(w - pad.r, y); g.stroke();
+    g.fillText((opts.yfmt || priceFmt)(v), w - pad.r + 6, y + 4);
+  }
+  for (const band of opts.bands || []) {
+    g.save(); g.setLineDash([4, 4]); g.strokeStyle = band.color; g.beginPath(); g.moveTo(pad.l, Y(band.v)); g.lineTo(w - pad.r, Y(band.v)); g.stroke(); g.restore();
+  }
+  if (opts.axis && xs.length > 1) {
+    for (let i = 0; i <= 3; i++) {
+      const t = t0 + ((t1 - t0) * i) / 3, label = timeFmt(t, opts.dates);
+      g.fillText(label, Math.min(Math.max(X(t) - g.measureText(label).width / 2, pad.l), w - pad.r - g.measureText(label).width), h - 4);
+    }
+  }
+  for (const s of series) {
+    if (s.fill) {
+      g.beginPath(); xs.forEach((t, i) => i ? g.lineTo(X(t), Y(s.values[i])) : g.moveTo(X(t), Y(s.values[i])));
+      g.lineTo(X(t1), Y(lo)); g.lineTo(X(t0), Y(lo)); g.closePath(); g.fillStyle = s.fill; g.fill();
+    }
+    g.beginPath(); g.strokeStyle = s.color; g.lineWidth = s.width || 1.5; g.lineJoin = "round";
+    xs.forEach((t, i) => i ? g.lineTo(X(t), Y(s.values[i])) : g.moveTo(X(t), Y(s.values[i])));
+    g.stroke();
+  }
+  for (const m of opts.markers || []) {
+    const x = X(m.t), y = Y(m.v), r = 6, up = m.action === "BUY" || m.action === "LONG";
+    if (m.action === "CLOSE") {
+      g.beginPath(); g.arc(x, y, 3.5, 0, Math.PI * 2); g.fillStyle = css("--price"); g.fill(); continue;
+    }
+    g.beginPath(); g.fillStyle = up ? css("--up") : css("--down");
+    if (up) { g.moveTo(x, y + 4); g.lineTo(x - r, y + 4 + r * 1.6); g.lineTo(x + r, y + 4 + r * 1.6); }
+    else { g.moveTo(x, y - 4); g.lineTo(x - r, y - 4 - r * 1.6); g.lineTo(x + r, y - 4 - r * 1.6); }
+    g.closePath(); g.fill();
+  }
+  return { X, Y, pad, w, h };
+}
+
+function stateText(text) {
+  return text.replace("Crypto market signals. ", "")
+    .replace(/Good: ([^.]*)\./, '<span class="good">▲ $1</span> ')
+    .replace(/Bad: ([^.]*)\./, '<span class="bad">▼ $1</span>');
+}
+
+function draw(coin) {
+  const d = state.coins[coin], c = card(coin), pts = d.points;
+  if (!pts.length) return;
+  const xs = pts.map((p) => p[0]), backtest = state.mode === "backtest";
+  const markers = d.trades.map(([t, action, price]) => ({ t, v: price, action }));
+  const geo = plot(c.canvases.price, xs, [{ values: pts.map((p) => p[1]), color: css("--price"), width: 1.4 }], { markers, axis: true, dates: backtest });
+  plot(c.canvases.p, xs, [{ values: pts.map((p) => p[2]), color: css("--laya"), width: 1.2, fill: `rgba(${css("--laya-soft")}, .12)` }],
+    { min: 0, max: 1, yfmt: (v) => v.toFixed(2), bands: [{ v: state.rules.enter_above, color: css("--up") }, { v: state.rules.enter_below, color: css("--down") }] });
+  if (backtest) {
+    const base = state.capital, r = (i) => pts.map((p) => (p[i] / base - 1) * 100);
+    plot(c.canvases.eq, xs, [
+      { values: r(5), color: css("--hold"), width: 1.2 }, { values: r(4), color: css("--rules"), width: 1.4 }, { values: r(3), color: css("--laya"), width: 1.8 },
+    ], { yfmt: (v) => `${v.toFixed(1)}%`, bands: [{ v: 0, color: css("--muted") }] });
+  }
+  // Crosshair on hover.
+  let i = pts.length - 1;
+  if (c.hover != null) {
+    const t = xs[0] + (xs[xs.length - 1] - xs[0]) * Math.min(Math.max((c.hover * geo.w - geo.pad.l) / (geo.w - geo.pad.l - geo.pad.r), 0), 1);
+    let lo = 0, hi = xs.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; xs[mid] < t ? lo = mid + 1 : hi = mid; }
+    i = lo;
+    const g = c.canvases.price.getContext("2d"), x = geo.X(xs[i]);
+    g.strokeStyle = css("--muted"); g.setLineDash([3, 3]); g.beginPath(); g.moveTo(x, geo.pad.t); g.lineTo(x, geo.h - geo.pad.b); g.stroke(); g.setLineDash([]);
+    c.tip.style.display = "block";
+    c.tip.innerHTML = `${timeFmt(xs[i], backtest)} · ${priceFmt(pts[i][1])} · P ${pts[i][2].toFixed(2)}${backtest ? ` · Laya ${pct((pts[i][3] / state.capital - 1) * 100)}` : ""}`;
+    c.tip.style.left = `${Math.min(x + 8, geo.w - c.tip.offsetWidth - 4)}px`; c.tip.style.top = "22px";
+  }
+  const p = pts[i], last = d.last;
+  c.q("price").textContent = priceFmt(p[1]);
+  c.q("p").textContent = p[2].toFixed(3);
+  c.q("gauge").style.left = `${p[2] * 100}%`;
+  c.q("equity").textContent = `${fmt(p[3])} (${pct((p[3] / state.capital - 1) * 100)})`;
+  c.q("trades").textContent = d.trades.length;
+  if (!backtest && last) {
+    c.q("action").className = `pill ${last.action}`; c.q("action").textContent = last.action;
+    c.q("reason").textContent = last.reason;
+    const held = last.position;
+    c.q("position").textContent = held
+      ? `${held.side > 0 ? "long" : "short"} ${fmt(held.leverage, 1)}x ${pct(held.side * (p[1] / held.entry - 1) * 100)}`
+      : "flat";
+    const s = last.signals;
+    c.q("read").innerHTML = `<div style="margin-bottom:4px;color:var(--muted)">What Laya read</div>${stateText(last.state)}
+      <div style="margin-top:6px;color:var(--muted)">RSI ${fmt(s.rsi14, 1)} · votes ${s.votes.reduce((a, b) => a + b, 0)} · buy flow ${fmt(s.buy_ratio * 100, 0)}% · funding ${s.funding == null ? "–" : fmt(s.funding * 100, 4) + "%"} · L/S ${s.long_short == null ? "–" : fmt(s.long_short, 2)} · F&amp;G ${last.fear_greed ?? "–"}</div>`;
+  } else if (backtest) {
+    const trade = [...d.trades].reverse().find((t) => t[0] <= xs[i]);
+    const side = trade && (trade[1] === "LONG" || trade[1] === "BUY") ? 1 : trade && trade[1] === "SHORT" ? -1 : 0;
+    c.q("position").textContent = side ? `${side > 0 ? "long" : "short"} ${pct(side * (p[1] / trade[2] - 1) * 100)}` : "flat";
+    c.q("action").className = `pill ${trade ? trade[1] : "HOLD"}`;
+    c.q("action").textContent = trade ? `last: ${trade[1]}` : "no trades yet";
+    c.q("reason").textContent = trade ? `${trade[3]} · ${timeFmt(trade[0], true)}` : "";
+  }
+}
+
+// Decision log: newest first. "Changes" keeps trades plus every round where what Laya
+// read changed, which hides the long runs of identical HOLDs between signal changes.
+function renderLog(coin) {
+  const d = state.coins[coin], c = card(coin), rows = d.decisions || [];
+  const key = `${rows.length}:${rows.length ? rows[rows.length - 1][0] : 0}:${c.filter}`;
+  if (key === c.logKey) return;
+  c.logKey = key;
+  let shown = rows;
+  if (c.filter === "trades") shown = rows.filter((r) => r[3] !== "HOLD");
+  else if (c.filter === "changes") shown = rows.filter((r, i) => r[3] !== "HOLD" || i === 0 || r[5] !== rows[i - 1][5] || r[4] !== rows[i - 1][4]);
+  const backtest = state.mode === "backtest";
+  c.q("logcount").textContent = `· ${shown.length} of ${rows.length}${backtest ? " trades" : " decisions"}`;
+  const box = c.q("log");
+  box.innerHTML = shown.slice(-400).reverse().map((r) => {
+    const open = c.open.has(r[0]);
+    const main = `<tr data-t="${r[0]}" class="${r[3] !== "HOLD" ? "trade" : ""}${open ? " open" : ""}" title="Click for the full context">
+    <td><span class="caret">${open ? "▾" : "▸"}</span>${timeFmt(r[0], backtest)}</td><td><span class="pill ${r[3]}">${r[3]}</span></td><td>${priceFmt(r[1])}</td>
+    <td>${r[2].toFixed(3)}</td><td>${r[4]}</td><td class="read-cell">${stateText(r[5])}</td>
+    <td>${fmt(r[6])}</td></tr>`;
+    return open ? main + `<tr class="detail"><td colspan="7">${detailHtml(coin, r, c.details[r[0]])}</td></tr>` : main;
+  }).join("") || `<tr><td colspan="7" style="text-align:left;color:var(--muted)">No decisions yet.</td></tr>`;
+}
+
+// Full context for one decision: fetched from the live server on click, or embedded in a
+// backtest report (8th field of each row).
+async function toggleDetail(coin, t) {
+  const c = card(coin);
+  if (c.open.has(t)) { c.open.delete(t); c.logKey = null; renderLog(coin); return; }
+  c.open.add(t); c.logKey = null;
+  if (!(t in c.details)) {
+    const row = (state.coins[coin].decisions || []).find((r) => r[0] === t);
+    if (row && row[7]) c.details[t] = row[7];
+    else if (state.mode === "live") {
+      c.details[t] = "loading";
+      renderLog(coin);
+      try {
+        const res = await fetch(`/decision?coin=${coin}&t=${t}`, { cache: "no-store" });
+        c.details[t] = res.ok ? await res.json() : null;
+      } catch (e) { c.details[t] = null; }
+    } else c.details[t] = null;
+  }
+  c.logKey = null; renderLog(coin);
+}
+
+const esc = (v) => String(v).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]);
+const num = (v) => typeof v === "number" ? (Math.abs(v) >= 1000 ? fmt(v, 2) : Math.abs(v) >= 1 ? fmt(v, 4) : v.toPrecision(4)) : Array.isArray(v) ? `[${v.join(", ")}]` : v == null ? "–" : esc(v);
+const dl = (obj) => obj ? `<dl>${Object.entries(obj).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${typeof v === "object" && v && !Array.isArray(v) ? esc(JSON.stringify(v)) : num(v)}</dd>`).join("")}</dl>` : "<span class='meta'>–</span>";
+
+function detailHtml(coin, r, d) {
+  if (d === "loading") return `<div class="detail-box"><span class="meta">Loading…</span></div>`;
+  if (!d) return `<div class="detail-box"><span class="meta">Full context not kept for this decision (older than the last 2,000 per coin, or saved before details were logged).</span></div>`;
+  const laya = d.laya || {}, trade = d.trade, strat = d.strategy;
+  const id = `copy-${coin}-${r[0]}`;
+  setTimeout(() => { const b = document.getElementById(id); if (b) b.onclick = () => navigator.clipboard.writeText(JSON.stringify(d, null, 2)).then(() => (b.textContent = "copied")); });
+  return `<div class="detail-box">
+    <div>
+      <h4>How the action was chosen <button class="copy" id="${id}">copy JSON</button></h4>
+      ${strat ? dl({ "P(bullish)": r[2], mode: strat.direction_mode, zone: strat.zone, signal: strat.signal, market: strat.market, "position before": strat.position_before, "rule fired": strat.rule, fill: d.fill ?? "current price" }) : dl({ "P(bullish)": r[2], action: r[3], reason: r[4] })}
+      ${trade ? `<h4 style="margin-top:10px">Trade</h4>${dl(trade)}` : ""}
+      ${d.position ? `<h4 style="margin-top:10px">Position after</h4>${dl(d.position)}` : ""}
+    </div>
+    <div>
+      <h4>Signals${d.fear_greed != null ? ` · Fear &amp; Greed ${d.fear_greed}` : ""}</h4>
+      ${dl(d.signals)}
+    </div>
+    <div class="full"><h4>Request sent to Laya</h4><pre>${esc(JSON.stringify(laya.request ?? { state: r[5] }, null, 2))}</pre></div>
+    ${laya.encoder_input ? `<div class="full"><h4>What the encoder read · ${laya.tokens} tokens</h4><pre>${esc(laya.encoder_input)}</pre></div>` : ""}
+    ${laya.answer ? `<div class="full"><h4>Laya's answer</h4><pre>${esc(JSON.stringify(laya.answer, null, 2))}</pre></div>` : ""}
+  </div>`;
+}
+
+function summary() {
+  $("summary").hidden = false;
+  $("summary-rows").innerHTML = Object.entries(state.coins).flatMap(([coin, d]) =>
+    Object.entries(d.summary).map(([name, r]) => `<tr><td>${coin}</td><td>${name}</td>
+      <td class="${r.return_pct >= 0 ? "pos" : "neg"}">${pct(r.return_pct)}</td><td>${pct(r.max_drawdown_pct)}</td>
+      <td>${r.trades}</td><td>${r.win_rate == null ? "–" : fmt(r.win_rate * 100, 0) + "%"}</td></tr>`)).join("");
+}
+
+function render() {
+  $("title").textContent = state.title;
+  $("mode").textContent = state.mode === "live" ? "LIVE · paper" : "BACKTEST";
+  $("mode").classList.toggle("live", state.mode === "live");
+  const st = state.rules;
+  $("setup").textContent = `${st.market} · ${st.direction} · risk ${st.risk_pct}%/trade · max ${st.market === "futures" ? st.max_leverage : 1}x · stop ${st.stop_loss_atr} ATR · target ${st.take_profit_atr} ATR`;
+  if (state.timing) $("timing").textContent = `fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms · Fear & Greed ${state.timing.fear_greed ?? "–"}`;
+  Object.keys(state.coins).forEach((coin) => { draw(coin); renderLog(coin); });
+}
+
+async function poll() {
+  try { state = await (await fetch("/state.json", { cache: "no-store" })).json(); render(); }
+  catch (e) { $("timing").textContent = "disconnected — is laya_trader.py running?"; }
+  setTimeout(poll, 1000);
+}
+
+addEventListener("resize", () => state && render());
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => state && render());
+// Routing: "/" is the live view; "/backtest" shows the latest report, with run controls when
+// served by laya_trader.py. Opened as a file, the report works on its own.
+const served = location.protocol.startsWith("http");
+const onBacktest = location.pathname.startsWith("/backtest") || (DATA && DATA.mode === "backtest");
+if (served) {
+  $("nav").hidden = false;
+  $("nav").querySelector(`[data-p="${onBacktest ? "backtest" : "live"}"]`).setAttribute("aria-current", "page");
+}
+
+async function runnerStatus(first) {
+  let st;
+  try { st = await (await fetch("/backtest/status", { cache: "no-store" })).json(); } catch (e) { return; }
+  $("run").disabled = st.running;
+  const out = st.output || [];
+  if (st.running) {
+    $("run-status").textContent = `running ${st.days} day(s)… ${Math.round(Date.now() / 1000 - st.started)} s`;
+    $("run-log").hidden = false; $("run-log").textContent = out.slice(-6).join("\n");
+    setTimeout(() => runnerStatus(false), 1000);
+  } else if (!first && st.exit_code === 0) {
+    location.reload();
+  } else if (st.exit_code) {
+    $("run-status").textContent = `failed (exit ${st.exit_code})`;
+    $("run-log").hidden = false; $("run-log").textContent = out.join("\n");
+  } else {
+    $("run-status").textContent = st.report_time ? `report from ${new Date(st.report_time * 1000).toLocaleString()}` : "no report yet";
+  }
+}
+
+if (onBacktest && served) {
+  $("runner").hidden = false;
+  if (DATA && DATA.days) $("days").value = DATA.days;
+  $("run").addEventListener("click", async () => {
+    $("run").disabled = true;
+    await fetch(`/backtest/run?days=${encodeURIComponent($("days").value)}`, { method: "POST" });
+    runnerStatus(false);
+  });
+  runnerStatus(true);
+}
+if (DATA) { state = DATA; summary(); render(); }
+else if (onBacktest) { $("title").textContent = "Laya trader · backtest"; $("mode").textContent = "BACKTEST"; }
+else { poll(); }
+</script>
+</body>
+</html>

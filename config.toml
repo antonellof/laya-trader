@@ -1,0 +1,31 @@
+# laya-trader: Laya MLX reads market signals and returns P(bullish); the strategy below
+# turns it into LONG / SHORT / CLOSE / HOLD on a paper account.
+# Paper only. No API keys, no real orders.
+
+symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
+interval_seconds = 1.0            # one decision round per interval, for every symbol
+kline_interval = "15m"            # candle size for the indicators (walk-forward: 15m lost least)
+model = "aac6fef/laya-multilingual-mlx"
+
+[paper]
+capital_usdt = 1000.0             # per symbol
+fee_pct = 0.1                     # per side, in percent (spot taker 0.1%, futures ~0.05%)
+
+[strategy]
+market = "spot"                   # "spot": long only, 1x   |   "futures": long + short, leverage
+direction = "reversion"           # "trend": long when bullish   |   "reversion": long when oversold
+enter_above = 0.65                # P(bullish) at or above: bullish signal
+enter_below = 0.20                # P(bullish) at or below: bearish signal
+risk_pct = 1.0                    # equity lost if the stop is hit; sets the position size
+max_leverage = 3.0                # cap on position size / equity (futures only)
+stop_loss_atr = 1.5               # stop distance, in ATR14 from entry
+take_profit_atr = 3.0             # take-profit distance, in ATR14 from entry
+cooldown_seconds = 900            # minimum time between two trades on one symbol
+
+[refresh]                         # slow signals do not need a request every second
+context_seconds = 60              # 4h EMA stack, funding rate, long/short ratio
+fear_greed_seconds = 600
+
+[binance]
+spot = "https://api.binance.com"           # public market data, no key needed
+futures = "https://fapi.binance.com"       # funding and long/short (public)
