@@ -1,7 +1,8 @@
-"""laya-trader live: Laya MLX reads market signals and a rule layer decides
-LONG / SHORT / CLOSE / HOLD every interval. Paper positions only: no API keys, no orders.
+"""laya-trader live: Laya MLX reads market signals for crypto and S&P 500 stocks, and each
+market's strategy decides LONG / SHORT / CLOSE / HOLD every interval.
+Paper positions only: no API keys, no orders.
 
-Open http://127.0.0.1:8765 for the live dashboard.
+Open http://127.0.0.1:8765 for the live dashboard (backtests at /backtest).
 """
 
 import argparse
@@ -19,6 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
+from backtest import paper_of, prompt_of, setup_text
 from core import (
     Account,
     Cache,
@@ -27,48 +29,12 @@ from core import (
     describe,
     explain,
     funding_times_between,
-    get_json,
     load_agent,
 )
+from markets import INTERVAL_MS, load_markets
 
 HERE = Path(__file__).resolve().parent
 DASHBOARD = HERE / "dashboard.html"
-
-
-def fetch(coin, config, cache):
-    spot, futures = config["binance"]["spot"], config["binance"]["futures"]
-    ttl = config["refresh"]["context_seconds"]
-    symbol = f"{coin}USDT"
-    klines = get_json(
-        f"{spot}/api/v3/klines?symbol={symbol}&interval={config['kline_interval']}&limit=100"
-    )
-    closes_4h = cache.get(
-        f"{coin}:4h",
-        ttl,
-        lambda: [
-            float(k[4])
-            for k in get_json(f"{spot}/api/v3/klines?symbol={symbol}&interval=4h&limit=60")
-        ],
-        default=[],
-    )
-    funding = cache.get(
-        f"{coin}:funding",
-        ttl,
-        lambda: float(
-            get_json(f"{futures}/fapi/v1/premiumIndex?symbol={symbol}")["lastFundingRate"]
-        ),
-    )
-    long_short = cache.get(
-        f"{coin}:ls",
-        ttl,
-        lambda: float(
-            get_json(
-                f"{futures}/futures/data/globalLongShortAccountRatio"
-                f"?symbol={symbol}&period=5m&limit=1"
-            )[0]["longShortRatio"]
-        ),
-    )
-    return compute_signals(klines, closes_4h, funding, long_short)
 
 
 def decision_row(t_ms, row):
@@ -87,25 +53,40 @@ def decision_row(t_ms, row):
 class Live:
     """Everything the dashboard shows, guarded by one lock."""
 
-    def __init__(self, config, keep=900, keep_decisions=2000):
+    def __init__(self, config, markets, keep=900, keep_decisions=2000):
         self.lock = threading.Lock()
         self.keep_decisions = keep_decisions
+        ids = [f"{m.kind}:{s}" for m in markets for s in m.symbols]
         # Full context per decision, fetched on demand when a log row is clicked.
-        self.details = {c: OrderedDict() for c in config["symbols"]}
+        self.details = {i: OrderedDict() for i in ids}
         self.data = {
             "mode": "live",
-            "title": "Laya trader · live paper trading",
-            "rules": config["strategy"],
+            "title": "Live paper trading",
             "capital": config["paper"]["capital_usdt"],
             "interval_seconds": config["interval_seconds"],
-            "coins": {
-                c: {
+            "prompt": dict(zip(("question", "format"), prompt_of(config))),
+            "markets": {
+                m.kind: {
+                    "label": m.label,
+                    "rules": m.cfg["strategy"],
+                    "fee_pct": m.cfg["fee_pct"],
+                    "interval": m.interval,
+                    "setup": setup_text(m.cfg["strategy"], m.interval),
+                    "open": m.is_open(),
+                }
+                for m in markets
+            },
+            "assets": {
+                f"{m.kind}:{s}": {
+                    "market": m.kind,
+                    "symbol": s,
                     "points": deque(maxlen=keep),
                     "trades": deque(maxlen=200),
                     "decisions": deque(maxlen=keep_decisions),
                     "last": None,
                 }
-                for c in config["symbols"]
+                for m in markets
+                for s in m.symbols
             },
         }
 
@@ -117,37 +98,38 @@ class Live:
         for line in path.read_text().splitlines():
             try:
                 row = json.loads(line)
+                asset = row.get("asset") or f"crypto:{row['coin']}"
                 t_ms = int(datetime.fromisoformat(row["at"]).timestamp() * 1000)
-                entry = self.data["coins"][row["coin"]]
+                entry = self.data["assets"][asset]
             except (ValueError, KeyError):
                 continue
             entry["decisions"].append(decision_row(t_ms, row))
-            self.remember(row["coin"], t_ms, row)
+            self.remember(asset, t_ms, row)
             count += 1
         return count
 
-    def remember(self, coin, t_ms, row):
-        details = self.details[coin]
+    def remember(self, asset, t_ms, row):
+        details = self.details[asset]
         details[t_ms] = row
         while len(details) > self.keep_decisions:
             details.popitem(last=False)
 
-    def detail(self, coin, t_ms):
+    def detail(self, asset, t_ms):
         with self.lock:
-            return self.details.get(coin, {}).get(t_ms)
+            return self.details.get(asset, {}).get(t_ms)
 
     def json(self):
         with self.lock:
-            coins = {
-                c: {
+            assets = {
+                a: {
                     **v,
                     "points": list(v["points"]),
                     "trades": list(v["trades"]),
                     "decisions": list(v["decisions"]),
                 }
-                for c, v in self.data["coins"].items()
+                for a, v in self.data["assets"].items()
             }
-            return json.dumps({**self.data, "coins": coins}).encode()
+            return json.dumps({**self.data, "assets": assets}).encode()
 
 
 class BacktestRunner:
@@ -161,28 +143,27 @@ class BacktestRunner:
         self.process, self.days, self.started, self.output = None, None, None, deque(maxlen=20)
         self.exit_code = None
 
-    def start(self, days):
+    def start(self, days, markets=None):
         with self.lock:
             if self.process and self.process.poll() is None:
                 return False
             self.days, self.started, self.exit_code = days, time.time(), None
             self.output.clear()
+            command = [
+                sys.executable,
+                str(HERE / "backtest.py"),
+                "--days",
+                str(days),
+                "--no-open",
+                "--config",
+                str(self.config_path),
+                "--out",
+                str(self.report),
+            ]
+            if markets:
+                command += ["--markets", markets]
             self.process = subprocess.Popen(
-                [
-                    sys.executable,
-                    str(HERE / "backtest.py"),
-                    "--days",
-                    str(days),
-                    "--no-open",
-                    "--config",
-                    str(self.config_path),
-                    "--out",
-                    str(self.report),
-                ],
-                cwd=HERE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
+                command, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
             )
             threading.Thread(target=self._read, args=(self.process,), daemon=True).start()
             return True
@@ -217,7 +198,7 @@ def serve(live, port, log_path=None, runner=None):
             self.wfile.write(body)
 
         def do_GET(self):
-            path = urlsplit(self.path).path
+            path, query = urlsplit(self.path).path, parse_qs(urlsplit(self.path).query)
             if path == "/state.json":
                 self.reply(live.json(), "application/json")
             elif path == "/decisions.jsonl" and log_path and log_path.exists():
@@ -233,9 +214,8 @@ def serve(live, port, log_path=None, runner=None):
                 page = runner.report if runner and runner.report.exists() else DASHBOARD
                 self.reply(page.read_bytes(), "text/html; charset=utf-8")
             elif path == "/decision":
-                query = parse_qs(urlsplit(self.path).query)
                 try:
-                    row = live.detail(query["coin"][0], int(query["t"][0]))
+                    row = live.detail(query["asset"][0], int(query["t"][0]))
                 except (KeyError, ValueError):
                     row = None
                 if row is None:
@@ -253,15 +233,16 @@ def serve(live, port, log_path=None, runner=None):
                 self.send_error(404)
                 return
             try:
-                days = min(max(float(query.get("days", ["1"])[0]), 0.05), 30)
+                days = min(max(float(query.get("days", ["7"])[0]), 0.05), 55)
             except ValueError:
                 self.send_error(400, "days must be a number")
                 return
-            started = runner.start(days)
+            markets = query.get("markets", [None])[0]
+            started = runner.start(days, markets)
             self.reply(
                 json.dumps({"started": started}).encode(),
                 "application/json",
-                code=202 if started else 409,
+                202 if started else 409,
             )
 
         def log_message(self, *_):
@@ -272,48 +253,96 @@ def serve(live, port, log_path=None, runner=None):
     return server
 
 
-def round_trip(agent, config, cache, accounts, pool, live, log):
-    coins = config["symbols"]
-    fear_greed = cache.get(
-        "fng",
-        config["refresh"]["fear_greed_seconds"],
-        lambda: int(get_json("https://api.alternative.me/fng/?limit=1")["data"][0]["value"]),
-    )
-    started = time.perf_counter()
-    data = dict(zip(coins, pool.map(lambda c: fetch(c, config, cache), coins)))
-    fetch_ms = (time.perf_counter() - started) * 1000
+class Laya:
+    """Laya with a small cache: an unchanged state (common between stock polls) reuses the
+    last answer instead of running the model again."""
 
+    def __init__(self, agent, question, size=4096):
+        self.agent, self.question, self.cache, self.size = agent, question, OrderedDict(), size
+
+    def __call__(self, state):
+        if state in self.cache:
+            self.cache.move_to_end(state)
+            return self.cache[state], True
+        answer = ask_laya(self.agent, state, self.question)
+        self.cache[state] = answer
+        if len(self.cache) > self.size:
+            self.cache.popitem(last=False)
+        return answer, False
+
+
+def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
     stamp = datetime.now(timezone.utc)
     now = stamp.timestamp()
     t_ms = int(now * 1000)
     previous_ms = live.data.get("last_ms") or t_ms
+    context = config.get("context", {})
+
     started = time.perf_counter()
-    lines = []
-    for coin, s in data.items():
-        state = describe(s, fear_greed)
-        laya = ask_laya(agent, state)
-        p = laya["p"]
-        account = accounts[coin]
-        for _ in funding_times_between(previous_ms, t_ms):
-            account.pay_funding(s["funding"], s["price"])
+    jobs = []
+    for market in markets:
+        extras = market.extras(cache, context)
+        for symbol in market.symbols:
+            jobs.append((market, symbol, pool.submit(market.snapshot, symbol, cache, extras)))
+    snapshots = []
+    for market, symbol, job in jobs:
+        try:
+            klines, ctx = job.result()
+            if len(klines) > 30:
+                snapshots.append((market, symbol, compute_signals(klines[-100:], ctx)))
+        except Exception as error:  # one asset failing must not stop the others
+            print(f"{market.kind}:{symbol} skipped: {error}", file=sys.stderr)
+    fetch_ms = (time.perf_counter() - started) * 1000
+
+    started, calls, lines = time.perf_counter(), 0, []
+    for market, symbol, s in snapshots:
+        asset = f"{market.kind}:{symbol}"
+        account = accounts[asset]
+        state = describe(s, market.noun, fmt)
+        answer, reused = laya(state)
+        calls += not reused
+        p = answer["p"]
+        if s.get("funding") is not None:
+            for _ in funding_times_between(previous_ms, t_ms):
+                account.pay_funding(s["funding"], s["price"])
         before = account.position
-        action, reason, fill = account.decide(p, s, now)
+        if market.is_open(now):
+            action, reason, fill = account.decide(p, s, now)
+        else:
+            action, reason, fill = "HOLD", "market closed", s["price"]
         trade = account.apply(action, reason, fill, s, now)
         equity = account.equity(s["price"])
-        change = (equity / account.start - 1) * 100
         held = account.position
         status = "flat"
         if held:
-            side = "long" if held["side"] > 0 else "short"
             move = held["side"] * (s["price"] / held["entry"] - 1) * 100
-            status = f"{side} {held['leverage']:.1f}x {move:+.2f}%"
+            status = (
+                f"{'long' if held['side'] > 0 else 'short'} {held['leverage']:.1f}x {move:+.2f}%"
+            )
         lines.append(
-            f"{coin:<5} {s['price']:>12,.4f}  rsi {s['rsi14']:5.1f}  votes {sum(s['votes']):+d}  "
-            f"P(bullish) {p:.2f} -> {action:<5} ({reason:<14}) {status:<20} "
-            f"equity {equity:>9.2f} ({change:+.2f}%)"
+            f"{asset:<13} {s['price']:>11,.4f}  P {p:.2f} -> {action:<5} ({reason:<14}) {status:<20} "
+            f"equity {equity:>9.2f} ({(equity / account.start - 1) * 100:+.2f}%)"
         )
+        strategy = market.cfg["strategy"]
+        row = {
+            "at": stamp.isoformat(),
+            "asset": asset,
+            "market": market.kind,
+            "coin": symbol,
+            "signals": s,
+            "state": state,
+            "p_bullish": p,
+            "action": action,
+            "reason": reason,
+            "trade": trade,
+            "laya": {k: v for k, v in answer.items() if k != "p"},
+            "strategy": explain(p, strategy, before, action, reason),
+            "position_before": before,
+            "position": held,
+            "equity": equity,
+        }
         with live.lock:
-            entry = live.data["coins"][coin]
+            entry = live.data["assets"][asset]
             entry["points"].append([t_ms, s["price"], p, equity])
             if action != "HOLD":
                 entry["trades"].append([t_ms, action, fill, reason])
@@ -324,52 +353,35 @@ def round_trip(agent, config, cache, accounts, pool, live, log):
                 "reason": reason,
                 "position": held,
                 "signals": s,
-                "fear_greed": fear_greed,
             }
-        row = {
-            "at": stamp.isoformat(),
-            "coin": coin,
-            "signals": s,
-            "fear_greed": fear_greed,
-            "state": state,
-            "p_bullish": p,
-            "action": action,
-            "reason": reason,
-            "trade": trade,
-            "laya": {k: v for k, v in laya.items() if k != "p"},
-            "strategy": explain(p, config["strategy"], before, action, reason),
-            "position_before": before,
-            "position": held,
-            "equity": equity,
-        }
-        with live.lock:
-            live.data["coins"][coin]["decisions"].append(decision_row(t_ms, row))
-            live.remember(coin, t_ms, row)
+            entry["decisions"].append(decision_row(t_ms, row))
+            live.remember(asset, t_ms, row)
         if log:
             log.write(json.dumps(row) + "\n")
     infer_ms = (time.perf_counter() - started) * 1000
     if log:
         log.flush()  # saved as it happens, not only on exit
     with live.lock:
-        live.data["timing"] = {"fetch_ms": fetch_ms, "laya_ms": infer_ms, "fear_greed": fear_greed}
+        live.data["timing"] = {"fetch_ms": fetch_ms, "laya_ms": infer_ms, "laya_calls": calls}
         live.data["last_ms"] = t_ms
+        for market in markets:
+            live.data["markets"][market.kind]["open"] = market.is_open(now)
+    trades = sum(len(a.trades) for a in accounts.values())
     print(
-        f"{stamp:%H:%M:%S}  fear&greed {fear_greed}  fetch {fetch_ms:.0f} ms  "
-        f"laya {infer_ms:.0f} ms  trades {sum(len(a.trades) for a in accounts.values())}\n"
-        + "\n".join(lines)
-        + "\n",
+        f"{stamp:%H:%M:%S}  fetch {fetch_ms:.0f} ms  laya {infer_ms:.0f} ms ({calls} calls)  "
+        f"trades {trades}\n" + "\n".join(lines) + "\n",
         flush=True,
     )
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--config", type=Path, default=Path("config.toml"))
+    parser.add_argument("--config", type=Path, default=HERE / "config.toml")
     parser.add_argument("--rounds", type=int, help="Stop after this many rounds")
     parser.add_argument(
         "--log",
         type=Path,
-        default=Path(f"logs/decisions-{datetime.now(timezone.utc):%Y-%m-%d}.jsonl"),
+        default=HERE / "logs" / f"decisions-{datetime.now(timezone.utc):%Y-%m-%d}.jsonl",
         help="Append every decision as JSON lines (default: logs/decisions-<UTC date>.jsonl)",
     )
     parser.add_argument("--no-log", action="store_true", help="Do not save decisions")
@@ -378,11 +390,18 @@ def main():
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser")
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
-    config["symbols"] = [c.upper() for c in config["symbols"]]
+    markets = load_markets(config)
+    question, fmt = prompt_of(config)
 
-    agent = load_agent(config["model"])
-    cache, live = Cache(), Live(config)
-    accounts = {c: Account(config["strategy"], config["paper"]) for c in config["symbols"]}
+    laya = Laya(load_agent(config["model"]), question)
+    cache, live = Cache(), Live(config, markets)
+    accounts = {
+        f"{m.kind}:{s}": Account(
+            m.cfg["strategy"], paper_of(config, m), INTERVAL_MS[m.interval] / 1000
+        )
+        for m in markets
+        for s in m.symbols
+    }
     log = None
     if not args.no_log:
         loaded = live.preload(args.log)
@@ -400,11 +419,11 @@ def main():
     print("Paper trading only: no orders are sent anywhere. Ctrl-C to stop.\n", file=sys.stderr)
     done = 0
     try:
-        with ThreadPoolExecutor(max_workers=max(4, len(config["symbols"]))) as pool:
+        with ThreadPoolExecutor(max_workers=16) as pool:
             while args.rounds is None or done < args.rounds:
                 tick = time.monotonic()
                 try:
-                    round_trip(agent, config, cache, accounts, pool, live, log)
+                    round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log)
                 except Exception as error:  # A network hiccup skips one round, not the run.
                     print(f"round skipped: {error}", file=sys.stderr)
                 done += 1

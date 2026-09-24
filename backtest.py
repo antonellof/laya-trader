@@ -1,13 +1,13 @@
-"""Backtest laya-trader on historical Binance candles and write an HTML report.
+"""Backtest laya-trader on historical candles and write an HTML report.
 
 Replays closed candles one by one with the same signals, Laya question, strategy and
-paper account as the live loop, and compares against two baselines on the same data:
-  rules only  - the four trend votes instead of Laya (sum >= +2 / <= -2), same strategy
+paper account as the live loop, for every market in config.toml, and compares against:
+  rules only  - the four trend votes in place of Laya (sum >= +2 / <= -2), same strategy
   buy & hold  - buy at the first candle, hold to the end
-Fear & Greed (daily) and funding (8-hourly) use their historical values. The long/short
-ratio has no long history on Binance and is left out, so the backtest sees slightly less
-than the live loop. Stops and take profits trigger on the candle's high/low and fill at
-their level (a gap past the level is not modelled).
+Every candle sees only data that existed when it closed. Crypto futures statistics
+(open interest, long/short, taker ratio) exist for the last 30 days only; stocks have
+15-minute history for about 60 days. Whale alerts and headlines are never included.
+Stops and take profits trigger on the candle's high/low and fill at their level.
 """
 
 import argparse
@@ -16,96 +16,51 @@ import sys
 import time
 import tomllib
 import webbrowser
-from bisect import bisect_right
 from datetime import datetime, timezone
 from pathlib import Path
 
 from core import (
+    QUESTION,
     Account,
     ask_laya,
     compute_signals,
     describe,
     explain,
     funding_times_between,
-    get_json,
     load_agent,
 )
+from markets import INTERVAL_MS, load_markets, value_at
 
-DASHBOARD = Path(__file__).with_name("dashboard.html")
+HERE = Path(__file__).resolve().parent
+DASHBOARD = HERE / "dashboard.html"
 PLACEHOLDER = "/*__DATA__*/null"
-INTERVAL_MS = {"1m": 60_000, "3m": 180_000, "5m": 300_000, "15m": 900_000, "1h": 3_600_000}
 WARMUP = 100  # candles of history each decision sees, as in the live loop
 
 
-def klines(spot, symbol, interval, start_ms, end_ms):
-    rows = []
-    while start_ms < end_ms:
-        batch = get_json(
-            f"{spot}/api/v3/klines?symbol={symbol}&interval={interval}"
-            f"&startTime={start_ms}&endTime={end_ms}&limit=1000",
-            timeout=10,
-        )
-        if not batch:
-            break
-        rows.extend(batch)
-        start_ms = batch[-1][0] + 1
-    return rows
+def prompt_of(config):
+    prompt = config.get("prompt", {})
+    return prompt.get("question", QUESTION), prompt.get("format", "good_bad")
 
 
-def funding_history(futures, symbol, start_ms, end_ms):
-    rows, cursor = [], start_ms - 86_400_000
-    try:
-        while cursor < end_ms:
-            batch = get_json(
-                f"{futures}/fapi/v1/fundingRate?symbol={symbol}"
-                f"&startTime={cursor}&endTime={end_ms}&limit=1000",
-                timeout=10,
-            )
-            if not batch:
-                break
-            rows.extend((r["fundingTime"], float(r["fundingRate"])) for r in batch)
-            cursor = batch[-1]["fundingTime"] + 1
-    except Exception:
-        pass
-    return rows
-
-
-def fear_greed_history(days):
-    try:
-        rows = get_json(f"https://api.alternative.me/fng/?limit={days + 2}", timeout=10)["data"]
-        return sorted((int(r["timestamp"]) * 1000, int(r["value"])) for r in rows)
-    except Exception:
-        return []
-
-
-def value_at(series, t):
-    """Last known value at time t from [(time, value)], or None."""
-    i = bisect_right(series, (t, float("inf")))
-    return series[i - 1][1] if i else None
-
-
-def prepare(config, coin, interval, start_ms, end_ms, agent, memo, quiet=False):
-    """Signals and Laya's P for every closed candle. Expensive part, done once."""
-    spot, futures = config["binance"]["spot"], config["binance"]["futures"]
-    step = INTERVAL_MS[interval]
-    symbol = f"{coin}USDT"
+def prepare(market, symbol, interval, start_ms, end_ms, agent, memo, prompt, quiet=False):
+    """Signals and Laya's P for every closed candle in [start, end]. The expensive part,
+    done once; identical states reuse Laya's earlier answer."""
+    question, fmt = prompt
     if not quiet:
         days = (end_ms - start_ms) / 86_400_000
-        print(f"{coin}: downloading {days:g} day(s) of {interval} candles...", file=sys.stderr)
-    fast = klines(spot, symbol, interval, start_ms - WARMUP * step, end_ms)
-    slow = klines(spot, symbol, "4h", start_ms - 60 * 14_400_000, end_ms)
-    funding = funding_history(futures, symbol, start_ms, end_ms)
-    sentiment = fear_greed_history(int((end_ms - start_ms) / 86_400_000) + 1)
-    steps, j, calls = [], 0, 0
+        print(f"{symbol}: downloading {days:g} day(s) of {interval} candles...", file=sys.stderr)
+    history = market.history(symbol, interval, start_ms, end_ms, WARMUP)
+    fast = history["fast"]
+    steps, calls = [], 0
     for i in range(WARMUP, len(fast)):
         close_ms = fast[i][6] + 1
-        while j < len(slow) and slow[j][6] < close_ms:
-            j += 1
-        closes_4h = [float(k[4]) for k in slow[max(0, j - 60) : j]]
-        s = compute_signals(fast[i - WARMUP + 1 : i + 1], closes_4h, value_at(funding, close_ms))
-        state = describe(s, value_at(sentiment, close_ms))
-        if state not in memo:
-            memo[state] = ask_laya(agent, state)
+        if close_ms < start_ms or close_ms > end_ms:
+            continue
+        s = compute_signals(fast[i - WARMUP + 1 : i + 1], history["ctx_at"](close_ms))
+        state = describe(s, market.noun, fmt)
+        key = (state, question)
+        if key not in memo:
+            memo[key] = ask_laya(agent, state, question)
             calls += 1
         votes = sum(s["votes"])
         steps.append(
@@ -113,26 +68,24 @@ def prepare(config, coin, interval, start_ms, end_ms, agent, memo, quiet=False):
                 "t": close_ms,
                 "s": s,
                 "state": state,
-                "p": memo[state]["p"],
-                "laya": memo[state],
+                "p": memo[key]["p"],
+                "laya": memo[key],
                 "rule": 1.0 if votes >= 2 else 0.0 if votes <= -2 else 0.5,
             }
         )
-        if not quiet and (i - WARMUP) % 1000 == 0:
-            print(f"  {coin}: {i - WARMUP}/{len(fast) - WARMUP} candles", file=sys.stderr)
     if not quiet:
-        print(f"  {coin}: {len(steps)} candles, {calls} new Laya calls", file=sys.stderr)
-    return {"steps": steps, "funding": funding}
+        print(f"  {symbol}: {len(steps)} candles, {calls} new Laya calls", file=sys.stderr)
+    return {"steps": steps, "funding": history["funding"]}
 
 
-def simulate(prepared, strategy, paper, score_key="p", record=False):
+def simulate(prepared, strategy, paper, score_key="p", record=False, candle_seconds=900):
     """Run one strategy over prepared candles. Cheap: no network, no model."""
-    account = Account(strategy, paper)
+    account = Account(strategy, paper, candle_seconds)
     funding, equities, decisions = prepared["funding"], [], []
     previous_t = None
     for step in prepared["steps"]:
         s, now = step["s"], step["t"] / 1000
-        if previous_t is not None:
+        if previous_t is not None and funding:
             for t in funding_times_between(previous_t, step["t"]):
                 account.pay_funding(value_at(funding, t), s["price"])
         previous_t = step["t"]
@@ -193,15 +146,17 @@ def stats(account, equities, start):
     }
 
 
-def report(prepared, config):
-    paper, strategy = config["paper"], config["strategy"]
-    laya, laya_eq, decisions = simulate(prepared, strategy, paper, "p", record=True)
-    rules, rules_eq, _ = simulate(prepared, strategy, paper, "rule")
+def paper_of(config, market):
+    return {"capital_usdt": config["paper"]["capital_usdt"], "fee_pct": market.cfg["fee_pct"]}
+
+
+def report(prepared, strategy, paper, candle_seconds):
+    laya, laya_eq, decisions = simulate(prepared, strategy, paper, "p", True, candle_seconds)
+    rules, rules_eq, _ = simulate(prepared, strategy, paper, "rule", False, candle_seconds)
     hold_eq = buy_and_hold(prepared, paper)
-    steps = prepared["steps"]
     points = [
         [st["t"], st["s"]["price"], round(st["p"], 4), round(a, 4), round(b, 4), round(c, 4)]
-        for st, a, b, c in zip(steps, laya_eq, rules_eq, hold_eq)
+        for st, a, b, c in zip(prepared["steps"], laya_eq, rules_eq, hold_eq)
     ]
 
     def timed(account):
@@ -223,20 +178,33 @@ def report(prepared, config):
     }
 
 
+def setup_text(strategy, interval):
+    lev = strategy["max_leverage"] if strategy["market"] == "futures" else 1
+    extra = []
+    if strategy.get("trend_filter", "none") != "none":
+        extra.append("only with the higher-timeframe trend")
+    if strategy.get("max_hold_candles"):
+        extra.append(f"exit after {strategy['max_hold_candles']} candles")
+    return ", ".join(
+        [f"{interval} candles", strategy["market"], strategy["direction"], f"max {lev:g}x", *extra]
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--config", type=Path, default=Path("config.toml"))
-    parser.add_argument("--days", type=float, default=1.0)
+    parser.add_argument("--config", type=Path, default=HERE / "config.toml")
+    parser.add_argument("--days", type=float, default=7.0)
     parser.add_argument("--end", help="UTC end date, YYYY-MM-DD (default: now)")
-    parser.add_argument("--out", type=Path, default=Path("backtest.html"))
+    parser.add_argument("--markets", help="Comma-separated: crypto,stocks (default: all)")
+    parser.add_argument("--out", type=Path, default=HERE / "backtest.html")
     parser.add_argument("--json", type=Path, help="Also write the raw results here")
     parser.add_argument("--no-open", action="store_true")
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
-    coins = [c.upper() for c in config["symbols"]]
-    interval = config["kline_interval"]
-    if interval not in INTERVAL_MS:
-        parser.error(f"kline_interval must be one of {', '.join(INTERVAL_MS)} for backtests")
+    markets = load_markets(config)
+    if args.markets:
+        wanted = {m.strip() for m in args.markets.split(",")}
+        markets = [m for m in markets if m.kind in wanted]
     end = (
         datetime.strptime(args.end, "%Y-%m-%d").replace(tzinfo=timezone.utc)
         if args.end
@@ -245,26 +213,45 @@ def main():
     end_ms = int(end.timestamp() * 1000)
     start_ms = int(end_ms - args.days * 86_400_000)
 
-    agent, memo = load_agent(config["model"]), {}
+    agent, memo, prompt = load_agent(config["model"]), {}, prompt_of(config)
     started = time.perf_counter()
-    results = {
-        coin: report(prepare(config, coin, interval, start_ms, end_ms, agent, memo), config)
-        for coin in coins
-    }
-    st = config["strategy"]
-    setup = (
-        f"{st['market']}, {st['direction']}, max {st['max_leverage'] if st['market'] == 'futures' else 1}x, "
-        f"risk {st['risk_pct']}% per trade"
-    )
+    assets, market_info = {}, {}
+    for market in markets:
+        if market.interval not in INTERVAL_MS:
+            parser.error(f"{market.kind}.kline_interval must be one of {', '.join(INTERVAL_MS)}")
+        strategy, paper = market.cfg["strategy"], paper_of(config, market)
+        market_info[market.kind] = {
+            "label": market.label,
+            "rules": strategy,
+            "fee_pct": paper["fee_pct"],
+            "interval": market.interval,
+            "setup": setup_text(strategy, market.interval),
+        }
+        for symbol in market.symbols:
+            try:
+                prepared = prepare(
+                    market, symbol, market.interval, start_ms, end_ms, agent, memo, prompt
+                )
+            except Exception as error:
+                print(f"  {symbol}: skipped ({error})", file=sys.stderr)
+                continue
+            if not prepared["steps"]:
+                print(f"  {symbol}: no candles in the window", file=sys.stderr)
+                continue
+            assets[f"{market.kind}:{symbol}"] = {
+                "market": market.kind,
+                "symbol": symbol,
+                **report(prepared, strategy, paper, INTERVAL_MS[market.interval] / 1000),
+            }
+
     data = {
         "mode": "backtest",
         "days": args.days,
-        "title": f"Laya trader · backtest · {args.days:g} day(s) of {interval} candles to "
-        f"{end:%Y-%m-%d %H:%M} UTC · {setup}",
-        "rules": st,
+        "title": f"Backtest · {args.days:g} day(s) to {end:%Y-%m-%d %H:%M} UTC",
         "capital": config["paper"]["capital_usdt"],
-        "fee_pct": config["paper"]["fee_pct"],
-        "coins": results,
+        "prompt": {"question": prompt[0], "format": prompt[1]},
+        "markets": market_info,
+        "assets": assets,
     }
     page = DASHBOARD.read_text().replace(
         PLACEHOLDER, json.dumps(data, separators=(",", ":")).replace("</", "<\\/")
@@ -273,14 +260,14 @@ def main():
     if args.json:
         args.json.write_text(json.dumps(data))
 
-    print(f"\n{setup} · {time.perf_counter() - started:.0f} s")
-    print(f"{'coin':<6}{'strategy':<12}{'return':>9}{'max DD':>9}{'trades':>8}{'win rate':>10}")
-    for coin, result in results.items():
+    print(f"\n{time.perf_counter() - started:.0f} s")
+    print(f"{'asset':<14}{'strategy':<12}{'return':>9}{'max DD':>9}{'trades':>8}{'win rate':>10}")
+    for asset_id, result in assets.items():
         for name, row in result["summary"].items():
             win = f"{row['win_rate'] * 100:.0f}%" if row["win_rate"] is not None else "-"
             print(
-                f"{coin:<6}{name:<12}{row['return_pct']:>+8.2f}%{row['max_drawdown_pct']:>+8.2f}%"
-                f"{row['trades']:>8}{win:>10}"
+                f"{asset_id:<14}{name:<12}{row['return_pct']:>+8.2f}%"
+                f"{row['max_drawdown_pct']:>+8.2f}%{row['trades']:>8}{win:>10}"
             )
     print(f"\nReport: {args.out.resolve()}")
     if not args.no_open:

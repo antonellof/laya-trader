@@ -1,31 +1,62 @@
-# laya-trader: Laya MLX reads market signals and returns P(bullish); the strategy below
+# laya-trader: Laya MLX reads market signals and returns P(bullish); each market's strategy
 # turns it into LONG / SHORT / CLOSE / HOLD on a paper account.
 # Paper only. No API keys, no real orders.
 
-symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
-interval_seconds = 1.0            # one decision round per interval, for every symbol
-kline_interval = "15m"            # candle size for the indicators (walk-forward: 15m lost least)
+interval_seconds = 1.0            # one decision round per interval
 model = "aac6fef/laya-multilingual-mlx"
 
 [paper]
-capital_usdt = 1000.0             # per symbol
+capital_usdt = 1000.0             # per asset
+
+[prompt]                          # what Laya is asked; see promptlab.py for how it was chosen
+question = "Is the short-term outlook for this asset bullish?"
+format = "good_bad"               # "good_bad" or "lists"
+
+# --- Crypto: Binance public data, trades 24/7 -----------------------------------------------
+[crypto]
+symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
+kline_interval = "15m"            # candle size for the indicators
 fee_pct = 0.1                     # per side, in percent (spot taker 0.1%, futures ~0.05%)
 
-[strategy]
+[crypto.strategy]                 # best Laya strategy in walkforward.py (see README)
 market = "spot"                   # "spot": long only, 1x   |   "futures": long + short, leverage
 direction = "reversion"           # "trend": long when bullish   |   "reversion": long when oversold
-enter_above = 0.65                # P(bullish) at or above: bullish signal
-enter_below = 0.20                # P(bullish) at or below: bearish signal
+enter_above = 0.75                # P(bullish) at or above: bullish signal
+enter_below = 0.15                # P(bullish) at or below: bearish signal
+trend_filter = "none"             # "htf": only trade with the higher-timeframe trend (4h EMA20 vs EMA50)
 risk_pct = 1.0                    # equity lost if the stop is hit; sets the position size
 max_leverage = 3.0                # cap on position size / equity (futures only)
-stop_loss_atr = 1.5               # stop distance, in ATR14 from entry
-take_profit_atr = 3.0             # take-profit distance, in ATR14 from entry
-cooldown_seconds = 900            # minimum time between two trades on one symbol
+stop_loss_atr = 0                 # stop distance in ATR14 from entry; 0 = no stop
+take_profit_atr = 0               # take-profit distance in ATR14; 0 = none
+max_hold_candles = 0              # close after this many candles; 0 = no time limit
+cooldown_seconds = 14400          # minimum time between two trades on one asset
 
-[refresh]                         # slow signals do not need a request every second
-context_seconds = 60              # 4h EMA stack, funding rate, long/short ratio
+# --- Stocks: S&P 500 names via Yahoo Finance, regular US session only -----------------------
+[stocks]
+symbols = ["AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "JPM", "XOM"]
+benchmark = "SPY"                 # for relative strength
+kline_interval = "15m"
+fee_pct = 0.02                    # commission-free brokers; this approximates the spread
+poll_seconds = 15                 # Yahoo is unofficial: refresh candles every 15 s, not every second
+
+[stocks.strategy]                 # best Laya strategy in walkforward.py (see README)
+market = "spot"                   # long only (shorting stocks needs a margin account)
+direction = "reversion"
+enter_above = 0.55
+enter_below = 0.30
+trend_filter = "none"             # "htf": only trade with the daily trend (EMA20 vs EMA50)
+risk_pct = 1.0
+max_leverage = 1.0
+stop_loss_atr = 0
+take_profit_atr = 0
+max_hold_candles = 0
+cooldown_seconds = 14400
+
+[context]                         # live-only sources: no history, so backtests can't include them
+whale_alerts = false              # large transfers onto / off exchanges (Whale Alert, crypto)
+news = false                      # latest headlines per asset, read by Laya as text (CoinJournal RSS)
+
+[refresh]                         # slow sources do not need a request every second
+context_seconds = 60              # higher-timeframe candles, funding, open interest, VIX, ...
 fear_greed_seconds = 600
-
-[binance]
-spot = "https://api.binance.com"           # public market data, no key needed
-futures = "https://fapi.binance.com"       # funding and long/short (public)
+news_seconds = 300

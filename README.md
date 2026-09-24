@@ -1,245 +1,282 @@
 # laya-trader
 
-A small experiment: every second, [Laya MLX](https://github.com/mizorewww/laya-mlx) reads live crypto market signals and says how bullish they look. A strategy layer turns that into **LONG**, **SHORT**, **CLOSE** or **HOLD** on a paper account, sizes each position from risk and caps leverage. A live dashboard shows each decision and its reason, and a backtest replays history with the same logic.
+An experiment: every second, [Laya MLX](https://github.com/mizorewww/laya-mlx) reads live market signals for **crypto** (Binance) and **S&P 500 stocks** (Yahoo Finance) and says how bullish they look. Each market's strategy turns that into **LONG**, **SHORT**, **CLOSE** or **HOLD** on a paper account, sizes the position from risk and caps leverage. A live dashboard shows every decision and its full context, a backtest replays history with the same logic, and two research tools pick the prompt and the strategy from evidence.
 
-**Paper trading only.** No API keys, no orders, nothing is sent to an exchange. Not financial advice.
+**Paper trading only.** No API keys, no orders, nothing is sent to an exchange or broker. Not financial advice.
 
 ```bash
-./run.sh                             # live loop + dashboard at http://127.0.0.1:8765
-                                     # backtest dashboard at http://127.0.0.1:8765/backtest
-uv run python backtest.py --days 3   # backtest from the terminal, writes backtest.html
+./run.sh                               # live loop + dashboard at http://127.0.0.1:8765
+uv run python backtest.py --days 7     # historical replay of every market, writes backtest.html
+uv run python promptlab.py             # which prompt makes Laya's P most predictive
+uv run python walkforward.py           # which strategy holds up on data it never saw
 ```
 
 Needs an Apple Silicon Mac and [uv](https://docs.astral.sh/uv/). The Laya checkpoint (~650 MB) downloads on first run.
 
 ## How it works
 
-Each round, for every coin in `config.toml`:
+Each round, for every asset in `config.toml`:
 
 ```
-Binance public data ──► signals ──► one sentence ──► Laya: P(bullish) ──► strategy ──► LONG / SHORT / CLOSE / HOLD
-   candles, funding,     indicators,   "Good: …           one forward pass    direction,      size from risk, leverage cap,
-   long/short, F&G       trend votes    Bad: …"            on the Mac GPU      stops, cooldown  paper account + dashboard + log
+public market data ──► signals ──► one sentence ──► Laya: P(bullish) ──► strategy ──► LONG / SHORT / CLOSE / HOLD
+ Binance / Yahoo        indicators,  "Good: …          one forward pass    direction,     size from risk,
+                        trend votes   Bad: …"           on the Mac GPU      exits, filter  paper account, log, dashboard
 ```
 
-### 1. Market data
+### 1. Markets and data
 
-Everything comes from public endpoints, no account needed.
+Everything comes from public endpoints, with no account needed.
 
-| Data | Source | Refreshed |
+| | Crypto (`[crypto]`) | Stocks (`[stocks]`) |
 |---|---|---|
-| Last 100 candles of `kline_interval` (default 15m) | Binance spot `/api/v3/klines` | every round |
-| Last 60 four-hour candles | Binance spot | every 60 s |
-| Funding rate | Binance futures `/fapi/v1/premiumIndex` | every 60 s |
-| Long/short account ratio | Binance futures | every 60 s |
-| Fear & Greed index | alternative.me | every 10 min |
+| Default assets | BTC, ETH, SOL | AAPL, MSFT, NVDA, AMZN, GOOGL, META, JPM, XOM |
+| Candles | Binance spot, every round | Yahoo Finance chart API, every `poll_seconds` (15 s) |
+| Trading hours | 24/7 | regular US session only; outside it: HOLD "market closed" |
+| Higher timeframe | 4h candles | daily candles |
+| Futures data | funding, open interest, long/short ratio, taker buy/sell ratio | – |
+| Sentiment | Fear & Greed index | VIX |
+| Benchmark | – | SPY, for relative strength |
+| Fees (paper) | 0.1% per side | 0.02% per side (approximates the spread) |
+| Optional, live only | Whale Alert transfers, CoinJournal headlines | Yahoo Finance headlines per symbol |
 
-Requests reuse open HTTPS connections. Opening a new one costs 0.3–0.9 s, which alone would break a one-second loop. With reuse, a round for three coins takes about 0.3 s. If a request fails, that round is skipped and the next one tries again.
+Yahoo's chart API is public but unofficial, so stocks are polled every 15 seconds rather than every second. Requests reuse open HTTPS connections. A round for all 11 assets takes about 0.3 s (median) to fetch. Laya's answers are cached by sentence, so an unchanged market doesn't run the model again. If one asset fails, only that asset is skipped.
 
 ### 2. Signals
 
-From the candles:
-
-- **EMA20** (exponential moving average)
-- **MACD** (EMA12 − EMA26)
-- **RSI14** (Wilder smoothing, as exchange charts use)
-- **ATR3 and ATR14** (average true range, i.e. volatility)
-- **Volume ratio**: the last closed candle against the 20 before it
-- **Buyer share of volume** over the last five closed candles, from Binance's taker-buy volume
+- **Fast candles** (`kline_interval`, default 15m):
+  - EMA20
+  - MACD, and whether it's rising or falling
+  - RSI14 and RSI7 (Wilder)
+  - ATR3/ATR14 (volatility)
+  - volume vs its 20-candle average
+  - buyer share of volume (crypto only; Yahoo has no taker data)
+- **Higher timeframe** (4h crypto, daily stocks): EMA20 vs EMA50, RSI14, MACD, ATR3/ATR14.
+- **1h:** the last hour's volume vs the 23 before it.
+- **Day:**
+  - crypto: 24h change and position in the 24h range
+  - stocks: change since yesterday's close and position in today's range
+- **Daily pivots** from yesterday: PP, S1, S2, R1, R2.
+- **Crypto futures:** funding, 1h open-interest change, long/short account ratio, taker buy/sell ratio.
+- **Sentiment and relative strength:** Fear & Greed (crypto), VIX (stocks), stock change minus SPY's.
 
 Four of them become **trend votes** of +1, 0 or −1:
 
 | Vote | +1 when | −1 when | 0 (neutral band) |
 |---|---|---|---|
 | Price vs EMA20 | more than 0.12% above | more than 0.12% below | within ±0.12% |
-| 4h EMA20 vs EMA50 | EMA20 above | EMA20 below | gap under 0.05% |
+| Higher-timeframe EMA20 vs EMA50 | EMA20 above | EMA20 below | gap under 0.05% |
 | MACD | positive | negative | smaller than 2% of ATR14 |
 | RSI14 | above 58 | below 42 | 42–58 |
 
-The neutral bands keep tiny wiggles from counting as trend. Most of the time the sum is between −1 and +1, which reads as "no clear trend".
-
 ### 3. What Laya reads
 
-The signals are turned into one sentence. Bullish facts go under *Good*, bearish facts under *Bad*:
+The signals become one sentence, with bullish facts under *Good* and bearish facts under *Bad*. A signal a market doesn't have simply never appears.
 
 ```
-Crypto market signals. Good: MACD positive, buyers dominate recent order flow.
-Bad: RSI overbought, funding high, longs crowded.
+Stock market signals. Good: price at daily support. Bad: trend votes bearish (-2 of 4),
+price below EMA20, MACD negative, MACD falling, daily momentum bearish.
 ```
 
 | Bullish (Good) when | Bearish (Bad) when |
 |---|---|
 | trend votes sum ≥ +2 | trend votes sum ≤ −2 |
 | price > 0.12% above EMA20 | price > 0.12% below EMA20 |
-| MACD positive | MACD negative |
+| MACD positive / rising beyond its noise band | MACD negative / falling beyond its noise band |
 | buyers > 55% of recent volume | buyers < 45% of recent volume |
 | volume > 1.5× average, mostly buying | volume > 1.5× average, mostly selling |
-| RSI below 30 (oversold) | RSI above 70 (overbought) |
-| Fear & Greed ≤ 25 (extreme fear) | Fear & Greed ≥ 75 (extreme greed) |
-| long/short ratio < 0.8 (crowd is short) | funding > 0.05% (longs crowded) |
-| | ATR3 > 2 × ATR14 (extreme volatility) |
+| RSI14 < 30, RSI7 < 20 | RSI14 > 70, RSI7 > 80 |
+| higher-timeframe RSI > 55 and MACD > 0 | higher-timeframe RSI < 45 and MACD < 0 |
+| last hour's volume > 2× average while rising | the same while falling |
+| price in the top 10% of the day's range | price in the bottom 10% |
+| price above R1 / within 0.3% of S1 or S2 | price below S1 / within 0.3% of R1 or R2 |
+| open interest up > 1% in an hour, price up | open interest up > 1%, price down |
+| futures taker buy/sell > 1.2, long/short < 0.8 | taker buy/sell < 0.8, funding > 0.05% |
+| Fear & Greed ≤ 25, VIX ≥ 30 | Fear & Greed ≥ 75, VIX ≤ 13 |
+| stock beating the S&P 500 by > 1% today | stock lagging it by > 1% |
+| whales moved coins off exchanges (24h) | whales moved coins onto exchanges (24h) |
+| | ATR3 > 2 × ATR14, fast or higher timeframe |
+
+With `news = true`, up to three recent headlines are appended as plain text. Whale Alert and the news feeds have no history, so backtests never include them. With them on, the live loop sees more than any backtest did; turn them on to explore, not to trust.
 
 ### 4. Laya's answer
 
-Laya is a typed-decision model. It doesn't generate text. Given a situation and a yes/no question, it returns a probability in a single forward pass: about 15 ms on an M2 Pro, fully local.
-
-Every round, each coin gets the same question:
-
-> *Is the short-term outlook for this coin bullish?*
-
-The answer is **P(bullish)**, between 0 and 1.
-
-Why this question: asking Laya directly "BUY or HOLD?" was mostly noise. On 36 hand-labelled scenarios, the best action wording picked the right action 25 times, and leaned heavily toward HOLD. Other wordings did no better than a coin flip. Asking it to *judge the signals* worked much better. It scored bull scenarios above bear scenarios in 94% of pairs, with average P of 0.57 for bull, 0.47 for mixed and 0.19 for bear. So Laya judges and fixed rules act.
+Laya is a typed-decision model: it doesn't generate text. Given a situation and a yes/no question, it returns a probability in one forward pass, in about 15 ms on an M2 Pro, fully local. The question (`[prompt]`) is *"Is the short-term outlook for this asset bullish?"*, and the answer is **P(bullish)**. Why this question is explained under [Prompt lab](#prompt-lab).
 
 ### 5. Strategy, position size and leverage
 
-**Direction.** P(bullish) becomes a signal:
+Each market has its own `[<market>.strategy]`.
+
+**Direction.**
 
 | `direction` | Bullish signal | Bearish signal |
 |---|---|---|
 | `trend` | P ≥ `enter_above` | P ≤ `enter_below` |
-| `reversion` | P ≤ `enter_below` (oversold, expect a bounce) | P ≥ `enter_above` (overbought, expect a pullback) |
+| `reversion` | P ≤ `enter_below` (oversold) | P ≥ `enter_above` (overbought) |
 
-**Actions**, checked in this order every round:
+**Actions**, in order:
 
 | Situation | Action |
 |---|---|
-| open position, losses would eat the margin | CLOSE (liquidated) |
-| open position, stop-loss level touched | CLOSE (stop loss) |
-| open position, take-profit level touched | CLOSE (take profit) |
-| a trade on this coin less than `cooldown_seconds` ago | HOLD (cooldown) |
+| open position, losses would eat the margin (futures) | CLOSE (liquidated) |
+| stop-loss or take-profit level touched (if set) | CLOSE |
+| open longer than `max_hold_candles` (if set) | CLOSE (time exit) |
+| last trade on this asset less than `cooldown_seconds` ago | HOLD (cooldown) |
 | open position and the signal points the other way | CLOSE (signal flipped) |
-| flat and bullish | LONG |
-| flat and bearish, `market = "futures"` | SHORT |
+| flat and bullish (and with the higher-timeframe trend, if `trend_filter = "htf"`) | LONG |
+| flat and bearish, `market = "futures"` (same filter) | SHORT |
 | anything else | HOLD |
 
-Stops sit `stop_loss_atr` × ATR14 from the entry, targets `take_profit_atr` × ATR14. In a backtest they trigger on the candle's high/low and fill at their level. Live, they're checked against the price every round.
+**Position size comes from risk, not from the model.** A trade is sized so that hitting the stop loses `risk_pct` of equity; with no stop, it's sized as if the stop were 3 ATR away. The size is then capped at `max_leverage` × equity on futures and 1× on spot. Futures also pay or receive funding at 00:00, 08:00 and 16:00 UTC and can be liquidated.
 
-**Position size comes from risk, not from the model.** Each trade is sized so that hitting the stop loses `risk_pct` of equity:
-
-```
-quantity = equity × risk_pct / stop distance
-```
-
-The size is then capped: `max_leverage` × equity on futures, 1× equity on spot. Quiet markets have a small ATR and tight stops, so the risk formula asks for large positions and the cap usually decides. Volatile markets get smaller positions automatically.
-
-**Futures** add shorts, leverage, funding and liquidation:
-- Funding is paid or received at 00:00, 08:00 and 16:00 UTC at the current rate: longs pay when it's positive, shorts receive.
-- A position is liquidated when equity falls below the 0.5% maintenance margin.
-
-**Paper account.** One per coin (`capital_usdt`, default 1,000). `fee_pct` is charged on every entry and exit. The accounts reset when the program restarts.
-
-**Could Laya pick the size or the leverage?** Only if a higher P meant a bigger next move. I measured that on 7–45 days of history: P against the return over the next 15 minutes to 4 hours, for BTC, ETH and SOL. On 1-minute and 5-minute candles the correlation is slightly *negative*, between −0.01 and −0.08: when Laya reads the market as bearish, price tends to bounce. On 15-minute candles it's near zero, at best +0.07. Sizing by P would scale positions with noise, so size stays a risk rule and leverage stays a cap you choose.
+**Could Laya pick the size or the leverage?** Only if a bigger P meant a bigger move, and it doesn't: P's rank correlation with the next move is ±0.1 at best, and its sign changes between periods (see below). Size stays a risk rule; leverage stays a cap you choose.
 
 ### 6. Logging
 
-Every decision is saved to `logs/decisions-<UTC date>.jsonl` as it happens. Each line holds the time, coin, all signal values, the full Laya exchange (request, encoder input, raw answer), how the strategy decided, the action and reason, the trade and position, and the equity. On restart, the dashboard reloads that day's history.
+Every decision is saved as it happens to `logs/decisions-<UTC date>.jsonl`. Each line has:
+- the asset and every signal value
+- the full Laya exchange: request, encoder input, raw answer
+- how the strategy decided
+- the trade and position
+- the equity
 
-## Live dashboard
+On restart, the dashboard reloads that day's history.
 
-`./run.sh` starts the loop and opens **http://127.0.0.1:8765**. The page updates every second. For each coin:
+## Dashboard
 
-- price chart with ▲ longs, ▼ shorts and ● closes
-- P(bullish) chart with the buy and sell thresholds
-- paper equity, position (side, leverage, move since entry) and trade count
-- the sentence Laya read in the latest round, plus the raw values (RSI, votes, buyer share, funding, long/short, Fear & Greed)
-- a **decision log**, filtered three ways:
-  - **Trades**: only LONG, SHORT and CLOSE
-  - **Changes**: trades, plus every round where Laya's input changed
-  - **All**: every round
-- **click any row** for its full context:
-  - how the strategy turned P into the action: zone, signal, position before, rule that fired
-  - every signal value
+`./run.sh` opens **http://127.0.0.1:8765**. The page updates every second.
+
+- **Market tabs** (Crypto / Stocks): each has a live dot when its market is open.
+- **Market bar:** paper equity, session P&L, open positions, trades, and the strategy in plain words.
+- **Asset tiles:** price and change, a sparkline, a P(bullish) gauge, the current action or position, and equity. Click one to open it. The URL (`#stocks/AAPL`) keeps the selection.
+- **Detail panel:**
+  - price chart with ▲ long, ▼ short and ● close markers, and hover to inspect any point
+  - P(bullish) against the thresholds
+  - stats, and the sentence Laya read with the raw values
+- **Decision log**, filtered as Trades / Changes / All. **Click any row for its full context:**
+  - how the strategy chose the action
+  - every signal
   - the exact request sent to Laya
-  - the token sequence its encoder actually read, decoded back to text
-  - Laya's raw answer
-  - the trade and resulting position, if there was one
+  - the token sequence its encoder read
+  - its raw answer
+  - the trade and position
 
-  A **copy JSON** button copies all of it. Live, the last 2,000 decisions per coin keep this detail and are fetched on click; backtest reports embed it for every trade.
-- a link to download the saved log
+  **copy JSON** copies it all.
 
-Options: `--rounds N`, `--log path.jsonl`, `--no-log`, `--no-open`, `--port`, `--config`.
+**/backtest** shows the latest backtest report in the same layout, plus a summary table and the return curves of Laya vs rules-only vs buy & hold. Pick the days and markets and press **Run**. The backtest runs as a separate process, so live trading is unaffected, and the page reloads when it's done.
 
 ## Backtest
 
-**http://127.0.0.1:8765/backtest** shows the latest report. Pick the number of days and press **Run**. The backtest runs as a separate process with its own copy of the model, so the live loop is unaffected. The page shows progress, then reloads with the new report. From the terminal, `uv run python backtest.py --days N` writes `backtest.html`, which also works opened as a file.
+`backtest.py --days N [--markets crypto,stocks]` replays closed candles one at a time with exactly the live logic, so nothing from the future leaks in:
 
-How the replay works:
+- **Slower data:** each candle only sees higher-timeframe candles, statistics and sentiment that existed when it closed.
+- **Crypto futures statistics:** they exist for 30 days. Stock 15-minute candles for about 60 days.
+- **Stops and targets:** they trigger on the candle's high/low and fill at their level.
+- **Speed:** identical sentences reuse Laya's answer, so a week of all 11 assets takes a minute or two.
 
-- It downloads historical candles from Binance and replays them one closed candle at a time.
-- Each step sees only the 100 candles before it and the four-hour candles already closed. Nothing from the future leaks in.
-- Signals, sentence, question, strategy and paper account are exactly the same as live, including funding on futures.
-- Fear & Greed (daily) and funding (every 8 hours) use their historical values.
-- The long/short ratio has no long history on Binance, so backtests run without it.
-- When two candles produce the same sentence, Laya's earlier answer is reused. A day of 1-minute candles takes a few seconds.
+It compares Laya with **rules only** (the same strategy driven by the trend votes instead of Laya) and **buy & hold**.
 
-Every run compares three strategies on the same candles, fees and stops:
+## What the backtests taught
 
-| Strategy | What it does |
+**Your 30-day run** (24 Aug – 24 Sept 2026, crypto, 15m, spot, reversion, stop 1.5 ATR, target 3 ATR, 15-minute cooldown) lost 26.7% (BTC), 17.7% (ETH) and 11.7% (SOL), while buy & hold made +7% to +19%. Taking the trades apart:
+
+| Per coin | BTC | ETH | SOL |
+|---|---|---|---|
+| Round trips | 148 | 122 | 119 |
+| Fees paid, of 1,000 | ~255 | ~223 | ~221 |
+| Stop-loss exits, total P&L | 64, −254 | 51, −267 | 47, −314 |
+| "Signal flipped" exits, total P&L | 69, **+43** | 59, **+120** | 59, **+205** |
+| Take-profit exits, total P&L | 15, +71 | 12, +81 | 13, +103 |
+
+1. **Fees were most of the loss:** about a quarter of the capital every month. Before fees the result was roughly flat.
+2. **Tight stops kill dip-buying.** A stop 1.5 ATR under a dip gets hit at the low. The stops lost 250–310 per coin; exiting when the signal flipped made money.
+3. **Markets drift.** Trading against the move without a filter fights that drift.
+
+These lessons went into the strategy options (no stop, time exits, trend filter) and into the search grid below.
+
+## Prompt lab
+
+`promptlab.py` measures how well each candidate prompt's P predicts the next move. It uses the rank correlation (IC) with the forward return 1 h and 4 h ahead, plus the return spread between the top and bottom 20% of P. Each is measured on the first two-thirds of the window (used to choose) and on the last third (the check). There are 5 questions (*outlook*, *higher in a few hours*, *stretched*, *good moment to buy*, *selling exhausted*) × 2 wordings (Good/Bad vs neutral lists).
+
+Results on 24 Sept 2026 (crypto 30 days, stocks 55 days, 15m candles):
+
+| Market | Best prompt | IC 4h, choose / check | Top−bottom spread 4h |
+|---|---|---|---|
+| Crypto | *outlook*, Good/Bad | −0.14 / **+0.09** (sign flips) | −34 bp / +19 bp |
+| Stocks | *outlook*, Good/Bad | −0.05 / **−0.12** (same sign) | −23 bp / −36 bp |
+
+- **None of the 9 alternatives beat the current prompt.** The neutral wording mostly weakened the signal. So the prompt stays, now with evidence.
+- **Stocks:** a low P (Laya reads bearish) is followed by a bounce over the next 4 hours, consistently. The spread is much bigger than the ~4 bp stock fees. **That's the case for reversion.**
+- **Crypto:** the relation reversed between the two parts: reversal first, then trend. A crypto strategy built on P rests on a signal whose direction isn't stable.
+
+## Walk-forward
+
+`walkforward.py` searches, per market, over:
+
+| Setting | Options |
 |---|---|
-| **Laya** | the full loop above |
-| **Rules only** | the same strategy with the trend votes in place of Laya (sum ≥ +2 bullish, ≤ −2 bearish). Shows what Laya adds on top of plain indicators. |
-| **Buy & hold** | buy at the first candle, sell at the last |
+| Score | Laya's P or the trend votes |
+| Direction | trend or reversion |
+| Thresholds | 0.55/0.30, 0.65/0.20, 0.75/0.15 |
+| Trend filter | off or higher timeframe |
+| Exits | 1.5 ATR stop + 3 ATR target; 3 ATR stop + 16-candle limit; 16-candle limit only; exit on signal flip only |
+| Cooldown | 1, 4 or 16 candles |
+| Setup | spot, futures 1× (crypto only) |
 
-The report has a summary table (return, maximum drawdown, trades, win rate of closed trades), per-coin charts, the three return curves, and a log of every trade with what Laya read at that moment.
+That's 576 strategies for crypto and 288 for stocks. It picks by average return on the older part (**crypto 20 days, stocks 37 days**), then runs the top picks on the newer part (**10 and 18 days**) that played no part in the choice.
 
-## Walk-forward: picking a strategy honestly
+Result on 24 Sept 2026:
 
-`uv run python walkforward.py` tries 216 strategies:
+| | Crypto | Stocks |
+|---|---|---|
+| Strategies profitable on the training part | **36 of 576** (the previous grid: 0 of 216) | 147 of 288 |
+| Best Laya strategy | reversion, 0.75/0.15, no stop or target, exit on flip, 16-candle cooldown, spot | reversion, 0.55/0.30, same exits and cooldown, spot |
+| … training part | +5.6% | +2.6% |
+| … **unseen part** | **+1.2%** (worst coin −4.1%) | **+0.5%** (worst −3.8%) |
+| Buy & hold, unseen part | +8.6% | +3.0% |
+| Same Laya strategy with shorts (futures) | −6.3% on the unseen part | – |
 
-- candles: 1m, 5m, 15m
-- score: Laya's P, or the trend votes alone
-- direction: trend or reversion
-- three pairs of thresholds
-- setup: spot, futures 1×, futures 3×
-- cooldown: 1 or 5 candles
+These two are the defaults in `config.toml`. On the same 30-day crypto window as the run above they give −4.0% (BTC), +17.5% (ETH), +7.6% (SOL), versus −26.7%, −17.7% and −11.7% before. That window overlaps the one used to choose them, though, so the unseen-part numbers are the honest ones.
 
-It picks the best by average return on the older **14 days**, then runs the top picks on the most recent **7 days**, which played no part in the choice. A strategy that shines only on the first window was fitted to noise. The run takes about 90 seconds; signals and Laya's answers are computed once per candle size.
-
-**Result (run on 24 Sept 2026, BTC/ETH/SOL):**
-
-- **No strategy made money, even on the 14 days it was chosen on.** The best lost 1.5%.
-- **On the unseen 7 days**, the top picks lost 2–14%, while buy & hold made +11.6% in a rising week.
-- **What lost least:** 15-minute candles, reversion, spot, few trades.
-- **What lost most:** 1-minute candles and leverage. Fees are paid on the full leveraged size, so 3× leverage triples them. The old default (1m, trend, futures 3×) lost 31–40% in a single day.
-- **Best Laya strategy:** −5.5% on the training window, −3.5% on the test window. Trend votes alone did slightly better on both.
-
-The defaults in `config.toml` are that best Laya strategy: 15m candles, reversion, spot, thresholds 0.65 / 0.20, one trade per 15 minutes. On the last 7 days it returned −4.9% (BTC), −6.3% (ETH) and −7.1% (SOL), against +9% to +16% for buy & hold.
-
-**The honest conclusion:** these public signals, read by Laya or by plain rules, don't carry an edge large enough to beat trading fees. Leverage and faster trading make that worse, not better. Improving results needs better information, not more tuning:
-- data the market hasn't priced in yet
-- cheaper execution (maker fees, fewer trades)
-- longer holding periods
-
-Rerun `walkforward.py` on new data before trusting any setting.
+**The honest conclusion:**
+- The changes turned heavy losses into small out-of-sample gains, with smaller drawdowns than holding. In rising markets, they still trail buy & hold.
+- 10–18 unseen days is a short test, and the crypto signal changed direction within a month.
+- **No stop loss** means an open position is exposed to a crash until the signal flips. The tested alternative with stops did worse, but a crash was not in the sample.
+- Rerun `promptlab.py` and `walkforward.py` on fresh data before trusting any setting.
 
 ## Configuration (`config.toml`)
 
 | Key | Default | Meaning |
 |---|---|---|
-| `symbols` | BTC, ETH, SOL | coins, quoted in USDT |
 | `interval_seconds` | 1.0 | time between rounds |
-| `kline_interval` | 15m | candle size for the indicators |
 | `model` | aac6fef/laya-multilingual-mlx | Laya checkpoint |
-| `paper.capital_usdt` / `fee_pct` | 1000 / 0.1 | paper balance per coin, fee per side in percent |
-| `strategy.market` | spot | `spot` (long only, 1×) or `futures` (long + short, leverage, funding) |
-| `strategy.direction` | reversion | `trend` or `reversion` |
-| `strategy.enter_above` / `enter_below` | 0.65 / 0.20 | P(bullish) thresholds |
-| `strategy.risk_pct` | 1.0 | % of equity lost if the stop is hit; sets the size |
-| `strategy.max_leverage` | 3.0 | size cap as a multiple of equity (futures only) |
-| `strategy.stop_loss_atr` / `take_profit_atr` | 1.5 / 3.0 | exits, in ATR14 multiples from the entry |
-| `strategy.cooldown_seconds` | 900 | minimum time between trades on one coin |
-| `refresh.context_seconds` / `fear_greed_seconds` | 60 / 600 | refresh rate of the slow signals |
-| `binance.spot` / `futures` | public Binance hosts | data endpoints |
+| `paper.capital_usdt` | 1000 | paper balance per asset |
+| `prompt.question` / `format` | *outlook* / good_bad | what Laya is asked, and how the sentence is worded |
+| `<market>.symbols` | see above | assets (crypto quoted in USDT) |
+| `<market>.kline_interval` | 15m | candle size: 1m, 5m, 15m, 1h |
+| `<market>.fee_pct` | 0.1 crypto, 0.02 stocks | fee per side, in percent |
+| `stocks.benchmark` / `poll_seconds` | SPY / 15 | relative-strength benchmark, Yahoo polling rate |
+| `<market>.strategy.market` | spot | `spot` (long only) or `futures` (long + short, leverage, funding) |
+| `<market>.strategy.direction` | reversion | `trend` or `reversion` |
+| `<market>.strategy.enter_above` / `enter_below` | 0.75/0.15 crypto, 0.55/0.30 stocks | P(bullish) thresholds |
+| `<market>.strategy.trend_filter` | none | `htf`: only trade with the higher-timeframe trend |
+| `<market>.strategy.risk_pct` | 1.0 | % of equity at risk per trade; sets the size |
+| `<market>.strategy.max_leverage` | 3 crypto, 1 stocks | size cap (futures only) |
+| `<market>.strategy.stop_loss_atr` / `take_profit_atr` | 0 / 0 | exits in ATR14 from the entry; 0 = off |
+| `<market>.strategy.max_hold_candles` | 0 | time exit; 0 = off |
+| `<market>.strategy.cooldown_seconds` | 14400 | minimum time between trades on one asset |
+| `context.whale_alerts` / `news` | false / false | live-only sources |
+| `refresh.*` | 60 / 600 / 300 s | refresh rates of the slow sources |
 
 ## Files
 
 ```
-config.toml     coins, timing, thresholds, paper account
-core.py         Binance data, indicators, trend votes, the sentence, Laya's question, strategy, paper account
+config.toml     markets, assets, prompt, strategies, paper account
+markets.py      data providers: Crypto (Binance) and Stocks (Yahoo Finance), live and history
+core.py         indicators, trend votes, the sentence, Laya's question, strategy, paper account
 laya_trader.py  live loop, dashboard server, backtest runner
 backtest.py     historical replay and report (prepare once, simulate any strategy)
-walkforward.py  216-strategy search, chosen on older data and tested on newer data
+promptlab.py    which prompt makes P most predictive, checked on unseen data
+walkforward.py  strategy search, chosen on older data and tested on newer data
 dashboard.html  one page for live (polls the server) and backtest (data embedded)
 run.sh          uv run python laya_trader.py "$@"
 ```
