@@ -98,7 +98,8 @@ button { font: inherit; color: inherit; }
 .gauge .mark { position: absolute; top: 0; width: 1px; height: 12px; background: var(--muted); }
 .read { margin-top: 10px; font-size: 12.5px; background: var(--chip); border-radius: 8px; padding: 8px 10px; }
 .good { color: var(--up); } .bad { color: var(--down); }
-.vals { color: var(--muted); font-size: .95em; }
+.vals, .mem { color: var(--muted); font-size: .95em; margin-top: 6px; }
+.mem { font-style: italic; }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .sw { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
@@ -190,7 +191,11 @@ const DATA = /*__DATA__*/null;
 const $ = (id) => document.getElementById(id);
 const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
 const fmt = (v, d = 2) => v == null || !isFinite(v) ? "–" : Number(v).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
-const pct = (v) => v == null || !isFinite(v) ? "–" : `${v >= 0 ? "+" : ""}${fmt(v, 2)}%`;
+const pct = (v) => {
+  if (v == null || !isFinite(v)) return "–";
+  if (Math.abs(v) < 0.005) v = 0;  // no "−0.00%"
+  return `${v >= 0 ? "+" : ""}${fmt(v, 2)}%`;
+};
 const priceFmt = (v) => fmt(v, v >= 1 ? 2 : 6);
 const timeFmt = (t, withDate) => new Date(t).toLocaleString(undefined, withDate
   ? { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }
@@ -363,14 +368,32 @@ function renderTiles() {
 }
 
 // --- Detail panel ----------------------------------------------------------------------------------
-function stateText(text) {
-  return esc(text).replace(/^\w+ market signals\. /, "")
+// A state has up to three parts: the signal summary, the memory of recent trades and
+// the open position, and the raw indicator values.
+const MEMORY_START = / (Your recent trades on this asset:|No earlier trades on this asset\.)/;
+function stateParts(text) {
+  const [head, values = ""] = text.replace(/^\w+ market signals\. /, "").split(" Values: ");
+  const m = head.match(MEMORY_START);
+  return m
+    ? { summary: head.slice(0, m.index), memory: head.slice(m.index + 1), values }
+    : { summary: head, memory: "", values };
+}
+function summaryHtml(summary) {
+  return esc(summary)
     .replace(/Good: ([^.]*)\./, '<span class="good">▲ $1</span> ')
     .replace(/Bad: ([^.]*)\./, '<span class="bad">▼ $1</span> ')
     .replace(/Bullish signals: ([^.]*)\./, '<span class="good">▲ $1</span> ')
-    .replace(/Bearish signals: ([^.]*)\./, '<span class="bad">▼ $1</span> ')
-    .replace(/Values: (.*)$/, '<span class="vals">$1</span>');
+    .replace(/Bearish signals: ([^.]*)\./, '<span class="bad">▼ $1</span> ');
 }
+// Full view: summary, then memory and values on their own muted lines.
+function stateText(text) {
+  const p = stateParts(text);
+  return summaryHtml(p.summary)
+    + (p.memory ? `<div class="mem">${esc(p.memory)}</div>` : "")
+    + (p.values ? `<div class="vals">${esc(p.values)}</div>` : "");
+}
+// Short view for log rows: the summary only (the rest is in the expanded row).
+function stateShort(text) { return summaryHtml(stateParts(text).summary); }
 
 function buildDetail() {
   const a = state.assets[ui.asset], m = state.markets[a.market], bt = state.mode === "backtest";
@@ -483,7 +506,7 @@ function renderLog() {
   ui.logKey = key;
   let shown = rows;
   if (ui.filter === "trades") shown = rows.filter((r) => r[3] !== "HOLD");
-  else if (ui.filter === "changes") shown = rows.filter((r, i) => r[3] !== "HOLD" || i === 0 || r[5] !== rows[i - 1][5] || r[4] !== rows[i - 1][4]);
+  else if (ui.filter === "changes") shown = rows.filter((r, i) => r[3] !== "HOLD" || i === 0 || stateParts(r[5]).summary !== stateParts(rows[i - 1][5]).summary || r[4] !== rows[i - 1][4]);
   $("detail").querySelector('[data-k="logcount"]').textContent = bt
     ? `· ${shown.length} trades`
     : `· ${shown.length} shown · trades and changes kept, every round in the saved log`;
@@ -491,7 +514,7 @@ function renderLog() {
     const open = ui.open.has(r[0]);
     const main = `<tr data-t="${r[0]}" class="${r[3] !== "HOLD" ? "trade" : ""}${open ? " open" : ""}" title="Click for the full context">
       <td><span class="caret">${open ? "▾" : "▸"}</span>${timeFmt(r[0], bt)}</td><td><span class="pill ${r[3]}">${r[3]}</span></td><td>${priceFmt(r[1])}</td>
-      <td>${r[2].toFixed(3)}</td><td>${esc(r[4])}</td><td class="read-cell">${stateText(r[5])}</td><td>${fmt(r[6])}</td></tr>`;
+      <td>${r[2].toFixed(3)}</td><td>${esc(r[4])}</td><td class="read-cell">${stateShort(r[5])}</td><td>${fmt(r[6])}</td></tr>`;
     return open ? main + `<tr class="detail"><td colspan="7">${detailHtml(r, ui.details[`${ui.asset}@${r[0]}`])}</td></tr>` : main;
   }).join("") || `<tr><td colspan="7" style="text-align:left;color:var(--muted)">No decisions yet.</td></tr>`;
 }
@@ -578,7 +601,10 @@ function render() {
   } else {
     $("timing").textContent = `${count} assets · ${state.days ?? "–"} days`;
   }
-  if (state.prompt) $("prompt").textContent = `Question asked: “${state.prompt.question}” (${state.prompt.format}).`;
+  if (state.prompt) {
+    const wording = Object.values(state.markets).map((m) => `${m.label}: ${m.format || state.prompt.format}`).join(", ");
+    $("prompt").textContent = `Question asked: “${state.prompt.question}” · state wording: ${wording}.`;
+  }
   renderTabs(); renderKpis(); renderTiles();
   if (state.mode === "backtest") renderSummary();
   drawDetail();

@@ -7,6 +7,7 @@ Open http://127.0.0.1:8765 for the live dashboard (backtests at /backtest).
 
 import argparse
 import json
+import re
 import subprocess
 import sys
 import threading
@@ -39,12 +40,27 @@ HERE = Path(__file__).resolve().parent
 DASHBOARD = HERE / "dashboard.html"
 
 
+MEMORY_START = re.compile(r" (Your recent trades on this asset:|No earlier trades on this asset\.)")
+
+
+def summary_of(state):
+    """The signal summary of a state, without the memory and the values: those contain
+    live numbers (price, % move, hours) that change every second."""
+    state = state.split(" Values: ", 1)[0]
+    return MEMORY_START.split(state, 1)[0]
+
+
 def keep(entry, row, t_ms):
     """Keep a decision in the on-screen log only if it's a trade or something changed
-    (what Laya read, or the reason). Unchanged HOLDs would otherwise push trades out
+    (the signal summary, or the reason). Unchanged HOLDs would otherwise push trades out
     within minutes; every round is still in the saved log file."""
     rows, new = entry["decisions"], decision_row(t_ms, row)
-    if rows and new[3] == "HOLD" and rows[-1][5] == new[5] and rows[-1][4] == new[4]:
+    if (
+        rows
+        and new[3] == "HOLD"
+        and summary_of(rows[-1][5]) == summary_of(new[5])
+        and rows[-1][4] == new[4]
+    ):
         return False
     rows.append(new)
     return True
