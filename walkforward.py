@@ -145,6 +145,100 @@ MEMORY_VARIANTS = {
     "last 10 trades": {"_memory": 10},
 }
 
+# A faster crypto trader on futures: lower fees (0.05% taker vs 0.1% spot), shorts,
+# shorter cooldowns, larger positions ("_fee" overrides the paper fee, in % per side).
+# At 1% risk a 1h position is ~0.3x equity, so leverage only matters with more risk.
+FUTURES_VARIANTS = {
+    "current (spot, 4h cooldown)": {},
+    "spot, 1h cooldown": {"cooldown_seconds": 3600},
+    "futures 1x, fee 0.05%, 4h cooldown": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 3.0,
+        "_fee": 0.05,
+    },
+    "futures 1x, fee 0.05%, 1h cooldown": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 3.0,
+        "cooldown_seconds": 3600,
+        "_fee": 0.05,
+    },
+    "futures 2x, fee 0.05%, 1h cooldown": {
+        "market": "futures",
+        "max_leverage": 2.0,
+        "risk_pct": 6.0,
+        "cooldown_seconds": 3600,
+        "_fee": 0.05,
+    },
+    "futures 3x, fee 0.05%, 1h cooldown": {
+        "market": "futures",
+        "max_leverage": 3.0,
+        "risk_pct": 9.0,
+        "cooldown_seconds": 3600,
+        "_fee": 0.05,
+    },
+    "futures 2x, 1h cooldown, hold max 24h": {
+        "market": "futures",
+        "max_leverage": 2.0,
+        "risk_pct": 6.0,
+        "cooldown_seconds": 3600,
+        "max_hold_candles": 24,
+        "_fee": 0.05,
+    },
+    "futures 2x, 1h cooldown, no 4h trend filter": {
+        "market": "futures",
+        "max_leverage": 2.0,
+        "risk_pct": 6.0,
+        "cooldown_seconds": 3600,
+        "trend_filter": "none",
+        "_fee": 0.05,
+    },
+    "futures 1x, 2h cooldown, fee 0.05%": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 3.0,
+        "cooldown_seconds": 7200,
+        "_fee": 0.05,
+    },
+    "futures 1x, 2h cooldown, maker fee 0.02%": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 3.0,
+        "cooldown_seconds": 7200,
+        "_fee": 0.02,
+    },
+    "futures 1x, 1h cooldown, maker fee 0.02%": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 3.0,
+        "cooldown_seconds": 3600,
+        "_fee": 0.02,
+    },
+    "futures 1x, 2h cooldown, fee 0.05%, risk 1.5%": {
+        "market": "futures",
+        "max_leverage": 1.0,
+        "risk_pct": 1.5,
+        "cooldown_seconds": 7200,
+        "_fee": 0.05,
+    },
+    "futures 2x, 2h cooldown, maker fee 0.02%": {
+        "market": "futures",
+        "max_leverage": 2.0,
+        "risk_pct": 6.0,
+        "cooldown_seconds": 7200,
+        "_fee": 0.02,
+    },
+}
+
+# Shorter cooldowns on the market's own setup (a faster trader, same fees).
+SPEED_VARIANTS = {
+    "current cooldown": {},
+    "2h cooldown": {"cooldown_seconds": 7200},
+    "1h cooldown": {"cooldown_seconds": 3600},
+    "no cooldown": {"cooldown_seconds": 0},
+}
+
 ROLLING_GRID = {
     "score": ["p", "rule"],
     "direction": ["trend", "reversion"],
@@ -363,9 +457,9 @@ def rolling(args, config, market, agent, memo, prompt):
 
     ask = asker(agent, memo, prompt[0])
 
-    def mean_return(start, end, strategy, score, memory=0):
+    def mean_return(start, end, strategy, score, memory=0, paper_used=None):
         parts = {k: window(v, start, end) for k, v in prepared.items()}
-        return evaluate(parts, strategy, paper, score, candle_seconds, ask, memory)
+        return evaluate(parts, strategy, paper_used or paper, score, candle_seconds, ask, memory)
 
     def hold_return(start, end):
         values = []
@@ -439,9 +533,13 @@ def rolling(args, config, market, agent, memo, prompt):
             f"{compound(totals['hold']):>+7.2f}%"
         )
 
-    variants = {"strategy": FIXED_VARIANTS, "risk": RISK_VARIANTS, "memory": MEMORY_VARIANTS}[
-        args.variants
-    ]
+    variants = {
+        "strategy": FIXED_VARIANTS,
+        "risk": RISK_VARIANTS,
+        "memory": MEMORY_VARIANTS,
+        "futures": FUTURES_VARIANTS,
+        "speed": SPEED_VARIANTS,
+    }[args.variants]
     print(f"\nPredefined {args.variants} variants on every test month (no search involved):")
     print(
         f"{'variant':<48}{'compounded':>11}{'months +':>10}{'beat hold':>10}{'worst month':>13}"
@@ -450,10 +548,12 @@ def rolling(args, config, market, agent, memo, prompt):
     for name, change in variants.items():
         change = dict(change)
         memory = change.pop("_memory", 0)
+        fee = change.pop("_fee", None)
         strategy = {**base, **change}
+        variant_paper = {**paper, "fee_pct": fee} if fee is not None else paper
         returns, exposure, drawdowns, worst_trades = [], [], [], []
         for _, test_start, test_end in folds:
-            result = mean_return(test_start, test_end, strategy, "p", memory)
+            result = mean_return(test_start, test_end, strategy, "p", memory, variant_paper)
             returns.append(result["return"])
             exposure.append(result["exposure"])
             drawdowns.append(result["drawdown"])
@@ -499,7 +599,7 @@ def main():
     parser.add_argument("--symbols", help="Comma-separated symbols for --rolling (default: config)")
     parser.add_argument(
         "--variants",
-        choices=("strategy", "risk", "memory"),
+        choices=("strategy", "risk", "memory", "futures", "speed"),
         default="strategy",
         help="Predefined variants to compare in --rolling",
     )

@@ -393,6 +393,36 @@ On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & h
 - **On crypto a 4 ATR stop helps a little.** Without overnight gaps, stops fill near their level: similar return, a slightly better worst month. **Crypto now uses it.**
 - **On crypto, the plain trend votes did better than Laya** with the same structure (+8.6% vs +0.5%). It's one comparison on the same months, so it's not proof, but it matches the prompt lab: Laya's crypto signal isn't stable. Set `signal = "votes"` under `[crypto.strategy]` to trade on the votes; Laya's reading still shows on the dashboard.
 
+## A faster trader: cooldowns, futures and leverage
+
+`walkforward.py --rolling --no-search --variants futures` (crypto) and `--variants speed` (stocks). Same 9 unseen months, 1h candles, without memory:
+
+| Crypto variant | Compounded | Worst month | Worst drawdown |
+|---|---|---|---|
+| Spot, 4h cooldown (previous default) | −0.3% | −3.8% | −8.4% |
+| Spot, 1h cooldown | −0.8% | −3.9% | −9.3% |
+| Futures 1×, 4h cooldown, fee 0.05%, risk 3% | +0.5% | −10.5% | −23.2% |
+| Futures 1×, 2h cooldown, fee 0.05%, risk 3% | −3.1% | −9.5% | −23.7% |
+| Futures 1×, 1h cooldown, fee 0.05%, risk 3% | −4.1% | −9.6% | −22.2% |
+| **Futures 1×, 2h cooldown, fee 0.05%, risk 1.5% (new default)** | **+6.4%** | −6.2% | −17.1% |
+| Futures 1×, 2h cooldown, maker fee 0.02% | +7.4% | −8.5% | −23.2% |
+| Futures 2×, 1h cooldown | −17.5% | −18.9% | −39.6% |
+| Futures 3×, 1h cooldown | −35.3% | −27.7% | −53.1% |
+| Buy & hold | −12.0% | −29.8% | −41.5% |
+
+| Stocks cooldown | Compounded | Worst month |
+|---|---|---|
+| 4h (previous default) | +11.5% | −3.6% |
+| **1h (new default)** | **+11.8%** | **−3.3%** |
+| none | +11.8% | −3.3% |
+| Buy & hold | +18.2% | −4.9% |
+
+- **Leverage above 1× destroyed crypto results.** 2× and 3× lost 17–35%, with drawdowns of 40–53%. Futures stay at 1×; their benefits are the lower fee (0.05% taker vs 0.1% spot) and being able to short.
+- **Faster works if positions are smaller.** At 1.5% risk (about half of equity per position), a 2h cooldown made +6.4% with a smaller worst drawdown than full size.
+- **Maker fees** (limit orders, 0.02%) would add about a point, but market orders pay taker fees, so the paper account assumes 0.05%.
+- **Stocks can trade every hour** at no cost. Their fees are tiny, and the result barely changes with the cooldown.
+- The crypto default was picked after seeing this table and was tested without memory, so treat +6.4% as optimistic.
+
 ## Configuration (`config.toml`)
 
 | Key | Default | Meaning |
@@ -404,15 +434,15 @@ On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & h
 | `<market>.memory_trades` | 10 crypto, 3 stocks | how many recent closed trades Laya reads (0 = none) |
 | `<market>.symbols` | see above | assets (crypto quoted in USDT) |
 | `<market>.kline_interval` | 1h | candle size: 1m, 5m, 15m, 1h |
-| `<market>.fee_pct` | 0.1 crypto, 0.02 stocks | fee per side, in percent |
+| `<market>.fee_pct` | 0.05 crypto (futures taker), 0.02 stocks | fee per side, in percent |
 | `stocks.benchmark` / `poll_seconds` | SPY / 30 | relative-strength benchmark, Yahoo polling rate |
-| `<market>.strategy.market` | spot | `spot` (long only) or `futures` (long + short, leverage, funding) |
+| `<market>.strategy.market` | futures crypto, spot stocks | `spot` (long only) or `futures` (long + short, leverage, funding) |
 | `<market>.strategy.signal` | laya | `laya`, or `votes` to trade on the four trend votes |
 | `<market>.strategy.direction` | trend crypto, reversion stocks | `trend` or `reversion` |
 | `<market>.strategy.enter_above` / `enter_below` | 0.65/0.20 crypto, 0.55/0.30 stocks | P(bullish) thresholds |
 | `<market>.strategy.trend_filter` | htf crypto, none stocks | `htf`: only trade with the higher-timeframe trend |
-| `<market>.strategy.risk_pct` | 1.0 crypto, 3.0 stocks | % of equity at risk per trade; sets the size (capped by leverage) |
-| `<market>.strategy.max_leverage` | 3 crypto, 1 stocks | size cap (futures only) |
+| `<market>.strategy.risk_pct` | 1.5 crypto, 3.0 stocks | % of equity at risk per trade; sets the size (capped by leverage) |
+| `<market>.strategy.max_leverage` | 1 | size cap (futures only); 2× and 3× lost heavily in tests |
 | `<market>.strategy.sizing_atr` | 3.0 | size = equity × risk_pct ÷ (sizing_atr × ATR14) |
 | `<market>.strategy.stop_loss_atr` / `take_profit_atr` | 4 / 0 crypto, 0 / 0 stocks | exits in ATR14 from the entry; 0 = off |
 | `<market>.strategy.stop_loss_pct` | 0 | fixed stop in percent from the entry |
@@ -423,7 +453,7 @@ On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & h
 | `<market>.strategy.max_hold_candles` | 70 crypto, 0 stocks | time exit (70 × 1h ≈ 3 days); 0 = off |
 | `<market>.strategy.exit_on_flip` | true | close when the signal turns the other way |
 | `<market>.strategy.flat_at_close` | false | stocks: close before the session ends, no overnight positions |
-| `<market>.strategy.cooldown_seconds` | 14400 | minimum time between trades on one asset |
+| `<market>.strategy.cooldown_seconds` | 7200 crypto, 3600 stocks | minimum time between trades on one asset |
 | `context.whale_alerts` / `news` | false / false | live-only sources |
 | `refresh.*` | 60 / 600 / 300 s | refresh rates of the slow sources |
 
