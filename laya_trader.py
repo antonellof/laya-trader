@@ -263,7 +263,16 @@ def serve(live, port, log_path=None, runner=None):
         def log_message(self, *_):
             pass
 
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    try:
+        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+    except OSError as error:
+        if error.errno not in (48, 98):  # address already in use (macOS, Linux)
+            raise
+        raise SystemExit(
+            f"Port {port} is already in use, most likely by another laya-trader that's still "
+            f"running.\nStop it (Ctrl-C in its terminal, or: pkill -f laya_trader.py), or start "
+            f"this one on another port: ./run.sh --port {port + 1}"
+        ) from None
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server
 
