@@ -28,8 +28,24 @@ body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 -app
 button { font: inherit; color: inherit; }
 .meta { color: var(--muted); font-size: 12.5px; }
 .pos { color: var(--up); } .neg { color: var(--down); }
-.top { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; justify-content: space-between; }
-.brand { display: flex; align-items: baseline; gap: 10px; }
+/* Header: three fixed columns, so the Live / Backtest switch stays centred on both pages
+   whatever the text on either side; sticky, so it stays reachable while scrolling. */
+.top { position: sticky; top: 0; z-index: 10; display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 16px; margin: -16px -16px 0; padding: 12px 16px; background: color-mix(in srgb, var(--bg) 88%, transparent); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid var(--line); }
+.brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
+.brand .meta { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.status { justify-self: end; display: inline-flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+.status span { overflow: hidden; text-overflow: ellipsis; }
+.status .dot.off { background: var(--down); }
+@media (max-width: 720px) {
+  .top { grid-template-columns: minmax(0, 1fr) auto; }
+  .status { grid-column: 1 / -1; justify-self: start; }
+}
+.wrap > .top + * { margin-top: 16px; }
+.tile.has-position { box-shadow: inset 3px 0 0 var(--up); }
+.tile.has-position.short { box-shadow: inset 3px 0 0 var(--down); }
+.tile.closed { opacity: .72; }
+.tile.closed:hover, .tile.closed[aria-selected="true"] { opacity: 1; }
+.kpi b.pos { color: var(--up); } .kpi b.neg { color: var(--down); }
 .brand h1 { margin: 0; font-size: 19px; letter-spacing: -0.01em; }
 .brand h1 span { color: var(--accent); }
 .pills { display: inline-flex; background: var(--chip); border: 1px solid var(--line); border-radius: 999px; padding: 3px; gap: 2px; }
@@ -37,6 +53,8 @@ button { font: inherit; color: inherit; }
 .pills [aria-current="page"], .pills [aria-selected="true"] { background: var(--panel); color: var(--ink); box-shadow: 0 1px 2px rgba(0,0,0,.08); font-weight: 600; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--hold); display: inline-block; }
 .dot.on { background: var(--up); animation: pulse 1.4s infinite; }
+.dot[hidden] { display: none; }
+#nav a { width: 92px; justify-content: center; }  /* fixed width: the bold active label can't move it */
 @keyframes pulse { 50% { opacity: .3; } }
 .count { font-size: 11px; color: var(--muted); font-weight: 500; }
 .marketbar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 14px; }
@@ -130,8 +148,8 @@ a.dl { font-size: 12px; color: var(--muted); }
 <div class="wrap">
   <div class="top">
     <div class="brand"><h1>Laya <span>Trader</span></h1><span class="meta" id="subtitle"></span></div>
-    <nav class="pills" id="nav" hidden><a href="/" data-p="live">Live</a><a href="/backtest" data-p="backtest">Backtest</a></nav>
-    <span class="meta" id="timing"></span>
+    <nav class="pills" id="nav" style="visibility:hidden"><a href="/" data-p="live">Live</a><a href="/backtest" data-p="backtest">Backtest</a></nav>
+    <div class="status"><i class="dot" id="status-dot" hidden></i><span id="timing"></span></div>
   </div>
 
   <section class="card" id="runner" hidden>
@@ -277,7 +295,8 @@ function renderKpis() {
   const list = assetsOf(ui.market).map(([, a]) => a);
   const shown = ui.market === "all" ? Object.values(state.markets) : [state.markets[ui.market]];
   const capital = state.capital * list.length;
-  const tiles = (rows) => rows.map(([v, l]) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`).join("");
+  const tone = (v) => typeof v === "string" && /^[+-]\d/.test(v) && v !== "+0.00%" ? (v.startsWith("-") ? "neg" : "pos") : "";
+  const tiles = (rows) => rows.map(([v, l]) => `<div class="kpi"><b class="${tone(v)}">${v}</b><span>${l}</span></div>`).join("");
   if (state.mode === "backtest") {
     const avg = (name) => list.length ? list.reduce((s, a) => s + a.summary[name].return_pct, 0) / list.length : null;
     const trades = list.reduce((s, a) => s + a.summary.Laya.trades, 0);
@@ -296,7 +315,7 @@ function renderKpis() {
       [`${shown.filter((m) => m.open).length} / ${shown.length}`, "markets open"],
     ]);
   }
-  $("setup").innerHTML = shown.map((m) => `<div>${shown.length > 1 ? `<b>${esc(m.label)}</b> · ` : "Strategy: "}${esc(m.setup)} · thresholds ${m.rules.enter_below} / ${m.rules.enter_above} · signal ${esc(m.rules.signal || "laya")} · fee ${m.fee_pct}% per side</div>`).join("");
+  $("setup").innerHTML = shown.map((m) => `<div>${shown.length > 1 ? `<b>${esc(m.label)}</b> · ` : "Strategy: "}${esc(m.setup)} · thresholds ${m.rules.enter_below} / ${m.rules.enter_above} · signal ${esc(m.rules.signal || "laya")}${m.memory_trades ? ` · memory: last ${m.memory_trades} trades` : ""} · fee ${m.fee_pct}% per side</div>`).join("");
 }
 
 function renderTiles() {
@@ -316,6 +335,13 @@ function renderTiles() {
   for (const [id, a] of list) {
     const t = el.querySelector(`[data-id="${CSS.escape(id)}"]`), pts = a.points;
     t.setAttribute("aria-selected", id === ui.asset);
+    if (state.mode === "live") {
+      const held = a.last && a.last.position;
+      t.classList.toggle("has-position", !!held);
+      t.classList.toggle("short", !!held && held.side < 0);
+      t.classList.toggle("closed", !state.markets[a.market].open);
+      t.title = state.markets[a.market].open ? "" : `${state.markets[a.market].label} market closed`;
+    }
     if (!pts.length) continue;
     const last = pts[pts.length - 1], change = (last[1] / pts[0][1] - 1) * 100;
     t.querySelector('[data-k="px"]').innerHTML = `${priceFmt(last[1])} <span class="${change >= 0 ? "pos" : "neg"}">${pct(change)}</span>`;
@@ -539,8 +565,17 @@ async function runnerStatus(first) {
 function render() {
   if (!state.markets) { $("detail").innerHTML = `<div class="empty">This report was made by an older version. Run a new backtest above.</div>`; return; }
   if (ui.market !== "all" && !state.markets[ui.market]) ui.market = "all";
-  $("subtitle").textContent = state.title;
-  if (state.timing) $("timing").textContent = `fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms (${state.timing.laya_calls} new)`;
+  const count = Object.keys(state.assets).length;
+  $("subtitle").textContent = state.mode === "live" ? `Paper trading · ${count} assets` : state.title;
+  if (state.mode === "live") {
+    $("status-dot").hidden = false;
+    $("status-dot").className = "dot on";
+    $("timing").textContent = state.timing
+      ? `Live · fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms`
+      : "Live";
+  } else {
+    $("timing").textContent = `${count} assets · ${state.days ?? "–"} days`;
+  }
   if (state.prompt) $("prompt").textContent = `Question asked: “${state.prompt.question}” (${state.prompt.format}).`;
   renderTabs(); renderKpis(); renderTiles();
   if (state.mode === "backtest") renderSummary();
@@ -550,12 +585,15 @@ function render() {
 
 async function poll() {
   try { state = await (await fetch("/state.json", { cache: "no-store" })).json(); render(); }
-  catch (e) { $("timing").textContent = "disconnected — is laya_trader.py running?"; }
+  catch (e) {
+    $("status-dot").hidden = false; $("status-dot").className = "dot off";
+    $("timing").textContent = "Disconnected — is laya_trader.py running?";
+  }
   setTimeout(poll, 1000);
 }
 
 readHash();
-if (served) { $("nav").hidden = false; $("nav").querySelector(`[data-p="${backtestPage ? "backtest" : "live"}"]`).setAttribute("aria-current", "page"); }
+if (served) { $("nav").style.visibility = "visible"; $("nav").querySelector(`[data-p="${backtestPage ? "backtest" : "live"}"]`).setAttribute("aria-current", "page"); }
 if (backtestPage && served) {
   $("runner").hidden = false;
   if (DATA && DATA.days) $("days").value = DATA.days;

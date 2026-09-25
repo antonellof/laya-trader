@@ -337,6 +337,43 @@ def describe(s, market="Crypto", fmt="good_bad"):
     return state
 
 
+# --- Memory: the asset's own recent trades, in words ------------------------------------------
+
+
+def memory_text(account, n, price, now):
+    """The last n closed trades on this asset with their outcome, most recent first, plus
+    the open position. Laya doesn't learn between calls; this is how it sees what its
+    earlier readings led to."""
+    trips, entry = [], None
+    for trade in account.trades:
+        if trade["action"] in ("LONG", "SHORT"):
+            entry = trade
+        elif trade["action"] == "CLOSE" and entry:
+            result = trade["pnl"] / entry["notional"] * 100 if entry["notional"] else 0.0
+            trips.append((entry, result, trade["reason"]))
+            entry = None
+    parts = []
+    for entry, result, reason in reversed(trips[-n:]):
+        verb = "bought" if entry["action"] == "LONG" else "sold short"
+        reading = f" (P {entry['score']:.2f})" if entry.get("score") is not None else ""
+        outcome = f"made {result:.1f}%" if result >= 0 else f"lost {-result:.1f}%"
+        parts.append(f"{verb} on a {entry['reason']} reading{reading}, {outcome} ({reason})")
+    if parts:
+        losses = sum(r < 0 for _, r, _ in trips[-n:])
+        text = f"Your recent trades on this asset: {'; '.join(parts)}. {losses} of the last {len(parts)} lost money."
+    else:
+        text = "No earlier trades on this asset."
+    held = account.position
+    if held:
+        hours = (now - held["opened"]) / 3600
+        move = held["side"] * (price / held["entry"] - 1) * 100
+        side = "long" if held["side"] > 0 else "short"
+        text += (
+            f" Now: {side} for {hours:.0f} hours, {'up' if move >= 0 else 'down'} {abs(move):.1f}%."
+        )
+    return text
+
+
 # --- Live-only context: whale transfers and news ----------------------------------------------
 
 EXCHANGES = (
@@ -615,7 +652,7 @@ class Account:
         pick = max if side > 0 else min
         return pick(candidates, key=lambda c: c[0])
 
-    def apply(self, action, reason, price, s, now):
+    def apply(self, action, reason, price, s, now, score=None):
         if action == "HOLD":
             return None
         st = self.strategy
@@ -660,7 +697,7 @@ class Account:
                 self.blocked_until = max(self.blocked_until, now + loss_cooldown)
                 self.blocked_reason = "cooling off after a loss"
         self.last_trade = now
-        trade.update(action=action, reason=reason, price=price, at=now)
+        trade.update(action=action, reason=reason, price=price, at=now, score=score)
         self.trades.append(trade)
         return trade
 

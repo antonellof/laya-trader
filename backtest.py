@@ -28,6 +28,7 @@ from core import (
     explain,
     funding_times_between,
     load_agent,
+    memory_text,
 )
 from markets import INTERVAL_MS, load_markets, value_at
 
@@ -40,6 +41,24 @@ WARMUP = 100  # candles of history each decision sees, as in the live loop
 def prompt_of(config):
     prompt = config.get("prompt", {})
     return prompt.get("question", QUESTION), prompt.get("format", "good_bad")
+
+
+def memory_of(config, market=None):
+    """How many recent trades Laya reads: per market, else [prompt], else none."""
+    default = int(config.get("prompt", {}).get("memory_trades", 0))
+    return int(market.cfg.get("memory_trades", default)) if market else default
+
+
+def asker(agent, memo, question):
+    """Ask Laya, cached by the exact text (identical states reuse the answer)."""
+
+    def ask(state):
+        key = (state, question)
+        if key not in memo:
+            memo[key] = ask_laya(agent, state, question)
+        return memo[key]
+
+    return ask
 
 
 def prepare(market, symbol, interval, start_ms, end_ms, agent, memo, prompt, quiet=False):
@@ -82,9 +101,14 @@ def prepare(market, symbol, interval, start_ms, end_ms, agent, memo, prompt, qui
     return {"steps": steps, "funding": history["funding"]}
 
 
-def simulate(prepared, strategy, paper, score_key="p", record=False, candle_seconds=900):
-    """Run one strategy over prepared candles. Cheap: no network, no model."""
+def simulate(
+    prepared, strategy, paper, score_key="p", record=False, candle_seconds=900, ask=None, memory=0
+):
+    """Run one strategy over prepared candles. Cheap: no network and no model, unless
+    `memory` is on: then Laya also reads this account's recent trades, so its answer
+    depends on the simulation and is asked here (`ask`, cached by exact text)."""
     account = Account(strategy, paper, candle_seconds)
+    use_memory = bool(memory and ask and score_key == "p")
     funding, equities, decisions = prepared["funding"], [], []
     previous_t = None
     for step in prepared["steps"]:
@@ -94,16 +118,23 @@ def simulate(prepared, strategy, paper, score_key="p", record=False, candle_seco
                 account.pay_funding(value_at(funding, t), s["price"])
         previous_t = step["t"]
         before = account.position
-        action, reason, fill = account.decide(step[score_key], s, now, s["high"], s["low"])
-        trade = account.apply(action, reason, fill, s, now)
+        score, laya, state = step[score_key], step["laya"], step["state"]
+        if use_memory:
+            state = f"{state} {memory_text(account, memory, s['price'], now)}"
+            laya = ask(state)
+            score = laya["p"]
+        action, reason, fill = account.decide(score, s, now, s["high"], s["low"])
+        trade = account.apply(action, reason, fill, s, now, score)
         equity = account.equity(s["price"])
         equities.append(equity)
+        account.scores = getattr(account, "scores", [])
+        account.scores.append(score)
         account.exposure_steps = getattr(account, "exposure_steps", 0) + bool(account.position)
         if record and trade:
             detail = {
                 "signals": s,
-                "laya": {k: v for k, v in step["laya"].items() if k != "p"},
-                "strategy": explain(step[score_key], strategy, before, action, reason),
+                "laya": {k: v for k, v in laya.items() if k != "p"},
+                "strategy": explain(score, strategy, before, action, reason),
                 "position_before": before,
                 "trade": trade,
                 "equity": equity,
@@ -115,10 +146,10 @@ def simulate(prepared, strategy, paper, score_key="p", record=False, candle_seco
                 [
                     step["t"],
                     fill,
-                    round(step[score_key], 4),
+                    round(score, 4),
                     action,
                     reason,
-                    step["state"],
+                    state,
                     equity,
                     detail,
                 ]
@@ -155,13 +186,15 @@ def paper_of(config, market):
     return {"capital_usdt": config["paper"]["capital_usdt"], "fee_pct": market.cfg["fee_pct"]}
 
 
-def report(prepared, strategy, paper, candle_seconds):
-    laya, laya_eq, decisions = simulate(prepared, strategy, paper, "p", True, candle_seconds)
+def report(prepared, strategy, paper, candle_seconds, ask=None, memory=0):
+    laya, laya_eq, decisions = simulate(
+        prepared, strategy, paper, "p", True, candle_seconds, ask, memory
+    )
     rules, rules_eq, _ = simulate(prepared, strategy, paper, "rule", False, candle_seconds)
     hold_eq = buy_and_hold(prepared, paper)
     points = [
-        [st["t"], st["s"]["price"], round(st["p"], 4), round(a, 4), round(b, 4), round(c, 4)]
-        for st, a, b, c in zip(prepared["steps"], laya_eq, rules_eq, hold_eq)
+        [st["t"], st["s"]["price"], round(p, 4), round(a, 4), round(b, 4), round(c, 4)]
+        for st, p, a, b, c in zip(prepared["steps"], laya.scores, laya_eq, rules_eq, hold_eq)
     ]
 
     def timed(account):
@@ -242,6 +275,7 @@ def main():
             parser.error(f"{market.kind}.kline_interval must be one of {', '.join(INTERVAL_MS)}")
         strategy, paper = market.cfg["strategy"], paper_of(config, market)
         market_info[market.kind] = {
+            "memory_trades": memory_of(config, market),
             "label": market.label,
             "rules": strategy,
             "fee_pct": paper["fee_pct"],
@@ -262,7 +296,14 @@ def main():
             assets[f"{market.kind}:{symbol}"] = {
                 "market": market.kind,
                 "symbol": symbol,
-                **report(prepared, strategy, paper, INTERVAL_MS[market.interval] / 1000),
+                **report(
+                    prepared,
+                    strategy,
+                    paper,
+                    INTERVAL_MS[market.interval] / 1000,
+                    asker(agent, memo, prompt[0]),
+                    memory_of(config, market),
+                ),
             }
 
     data = {

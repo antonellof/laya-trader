@@ -20,7 +20,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
-from backtest import paper_of, prompt_of, setup_text
+from backtest import memory_of, paper_of, prompt_of, setup_text
 from core import (
     Account,
     Cache,
@@ -30,6 +30,7 @@ from core import (
     explain,
     funding_times_between,
     load_agent,
+    memory_text,
 )
 from markets import INTERVAL_MS, load_markets
 
@@ -78,6 +79,7 @@ class Live:
             "prompt": dict(zip(("question", "format"), prompt_of(config))),
             "markets": {
                 m.kind: {
+                    "memory_trades": memory_of(config, m),
                     "label": m.label,
                     "rules": m.cfg["strategy"],
                     "fee_pct": m.cfg["fee_pct"],
@@ -310,6 +312,9 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
         asset = f"{market.kind}:{symbol}"
         account = accounts[asset]
         state = describe(s, market.noun, fmt)
+        memory = memory_of(config, market)
+        if memory:  # the asset's recent trades and their outcome, in words
+            state = f"{state} {memory_text(account, memory, s['price'], now)}"
         answer, reused = laya(state)
         calls += not reused
         p = answer["p"]
@@ -324,7 +329,7 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
             action, reason, fill = account.decide(p, s, now)
         else:
             action, reason, fill = "HOLD", "market closed", s["price"]
-        trade = account.apply(action, reason, fill, s, now)
+        trade = account.apply(action, reason, fill, s, now, p)
         equity = account.equity(s["price"])
         held = account.position
         status = "flat"

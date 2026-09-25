@@ -19,7 +19,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from backtest import buy_and_hold, max_drawdown, paper_of, prepare, prompt_of, simulate
+from backtest import asker, buy_and_hold, max_drawdown, paper_of, prepare, prompt_of, simulate
 from core import load_agent
 from markets import INTERVAL_MS, load_markets
 
@@ -47,12 +47,14 @@ def split(prepared, cut_ms):
     return part(lambda t: t <= cut_ms), part(lambda t: t > cut_ms)
 
 
-def evaluate(parts, strategy, paper, score, candle_seconds):
+def evaluate(parts, strategy, paper, score, candle_seconds, ask=None, memory=0):
     rows = []
     for prepared in parts.values():
         if not prepared["steps"]:
             continue
-        account, equities, _ = simulate(prepared, strategy, paper, score, False, candle_seconds)
+        account, equities, _ = simulate(
+            prepared, strategy, paper, score, False, candle_seconds, ask, memory
+        )
         rows.append(
             (
                 (equities[-1] / paper["capital_usdt"] - 1) * 100,
@@ -124,6 +126,14 @@ RISK_VARIANTS = {
         "trailing_stop_atr": 6,
         "max_entry_atr_ratio": 2,
     },
+}
+
+# Laya reads the asset's last N closed trades and their outcome ("_memory" is not a
+# strategy key; it sets how many trades go into the text).
+MEMORY_VARIANTS = {
+    "no memory": {"_memory": 0},
+    "last 3 trades": {"_memory": 3},
+    "last 10 trades": {"_memory": 10},
 }
 
 ROLLING_GRID = {
@@ -239,9 +249,11 @@ def rolling(args, config, market, agent, memo, prompt):
     )
     default = {**base, "cooldown_seconds": base["cooldown_seconds"]}
 
-    def mean_return(start, end, strategy, score):
+    ask = asker(agent, memo, prompt[0])
+
+    def mean_return(start, end, strategy, score, memory=0):
         parts = {k: window(v, start, end) for k, v in prepared.items()}
-        return evaluate(parts, strategy, paper, score, candle_seconds)
+        return evaluate(parts, strategy, paper, score, candle_seconds, ask, memory)
 
     def hold_return(start, end):
         values = []
@@ -315,17 +327,21 @@ def rolling(args, config, market, agent, memo, prompt):
             f"{compound(totals['hold']):>+7.2f}%"
         )
 
-    variants = FIXED_VARIANTS if args.variants == "strategy" else RISK_VARIANTS
+    variants = {"strategy": FIXED_VARIANTS, "risk": RISK_VARIANTS, "memory": MEMORY_VARIANTS}[
+        args.variants
+    ]
     print(f"\nPredefined {args.variants} variants on every test month (no search involved):")
     print(
         f"{'variant':<48}{'compounded':>11}{'months +':>10}{'beat hold':>10}{'worst month':>13}"
         f"{'worst DD':>10}{'worst trade':>13}{'in market':>11}"
     )
     for name, change in variants.items():
+        change = dict(change)
+        memory = change.pop("_memory", 0)
         strategy = {**base, **change}
         returns, exposure, drawdowns, worst_trades = [], [], [], []
         for _, test_start, test_end in folds:
-            result = mean_return(test_start, test_end, strategy, "p")
+            result = mean_return(test_start, test_end, strategy, "p", memory)
             returns.append(result["return"])
             exposure.append(result["exposure"])
             drawdowns.append(result["drawdown"])
@@ -371,7 +387,7 @@ def main():
     parser.add_argument("--symbols", help="Comma-separated symbols for --rolling (default: config)")
     parser.add_argument(
         "--variants",
-        choices=("strategy", "risk"),
+        choices=("strategy", "risk", "memory"),
         default="strategy",
         help="Predefined variants to compare in --rolling",
     )

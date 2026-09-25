@@ -106,6 +106,31 @@ With `news = true`, up to three recent headlines are appended as plain text. Wha
 
 Laya is a typed-decision model: it doesn't generate text. Given a situation and a yes/no question, it returns a probability in one forward pass, in about 15 ms on an M2 Pro, fully local. The question (`[prompt]`) is *"Is the short-term outlook for this asset bullish?"*, and the answer is **P(bullish)**. Why this question is explained under [Prompt lab](#prompt-lab).
 
+### 4b. Memory: Laya reads its own recent trades
+
+Laya doesn't learn between calls. To let it see what its earlier readings led to, the state text can end with the asset's last N **closed trades and their outcome**, most recent first, plus the open position. It's the last N *trades*, not decisions: the last N decisions are mostly identical HOLDs and carry no information.
+
+```
+… Your recent trades on this asset: bought on a bullish reading (P 0.69), lost 3.4% (stop loss);
+bought on a bullish reading (P 0.68), made 8.6% (time exit); … 4 of the last 5 lost money.
+Now: long for 8 hours, down 3.2%.
+```
+
+Set per market with `memory_trades` (defaults: crypto 10, stocks 3; 0 = off). Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
+
+Tested on 9 unseen months (a year of 1h candles; `walkforward.py --rolling --no-search --variants memory`):
+
+| | Compounded | Worst month | Worst drawdown | Worst single trade | Time in market |
+|---|---|---|---|---|---|
+| Crypto, no memory | +0.95% | −3.2% | −8.4% | −1.4% | 28% |
+| Crypto, last 3 trades | −0.97% | −2.9% | −7.8% | −1.5% | 25% |
+| **Crypto, last 10 trades** | **+1.62%** | **−2.2%** | **−6.0%** | −1.4% | 23% |
+| Stocks, no memory | +10.0% | −1.8% | −22.1% | −19.3% | 68% |
+| **Stocks, last 3 trades** | **+10.1%** | **−1.2%** | −24.0% | **−5.0%** | 38% |
+| Stocks, last 10 trades | +8.4% | −1.6% | −24.0% | −5.0% | 40% |
+
+Memory mostly makes Laya **more cautious after losses**. Stocks spend 38% of the time in the market instead of 68%, and the worst single trade shrinks from −19% to −5%, for the same return. Crypto gains a little and loses less in its worst month. The effects are modest and come from one test. Choosing 10 for crypto and 3 for stocks after seeing it is mild hindsight.
+
 ### 5. Strategy, position size and leverage
 
 Each market has its own `[<market>.strategy]`.
@@ -161,7 +186,7 @@ On restart, the dashboard reloads that day's history.
 
 ## Dashboard
 
-`./run.sh` opens **http://127.0.0.1:8765**. The page updates every second.
+`./run.sh` opens **http://127.0.0.1:8765**. The page updates every second. The header stays at the top while you scroll, with the Live / Backtest switch always in the same place and the connection status on the right.
 
 - **Summary bar:** paper equity, session P&L, open positions, trades, and how many markets are open, for whatever the filter shows.
 - **Filter, right above the asset list:** **All** (the default: crypto and stocks together), **Crypto** or **Stocks**. Each option shows a count and a live dot when its market is open.
@@ -376,6 +401,7 @@ On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & h
 | `model` | aac6fef/laya-multilingual-mlx | Laya checkpoint |
 | `paper.capital_usdt` | 1000 | paper balance per asset |
 | `prompt.question` / `format` | *outlook* / good_bad | what Laya is asked, and how the sentence is worded |
+| `<market>.memory_trades` | 10 crypto, 3 stocks | how many recent closed trades Laya reads (0 = none) |
 | `<market>.symbols` | see above | assets (crypto quoted in USDT) |
 | `<market>.kline_interval` | 1h | candle size: 1m, 5m, 15m, 1h |
 | `<market>.fee_pct` | 0.1 crypto, 0.02 stocks | fee per side, in percent |

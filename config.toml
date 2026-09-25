@@ -11,12 +11,14 @@ capital_usdt = 1000.0             # per asset
 [prompt]                          # what Laya is asked; see promptlab.py for how it was chosen
 question = "Is the short-term outlook for this asset bullish?"
 format = "good_bad"               # "good_bad" or "lists"
+memory_trades = 0                 # default for markets that don't set their own (0 = no memory)
 
 # --- Crypto: Binance public data, trades 24/7 -----------------------------------------------
 [crypto]
 symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
 kline_interval = "1h"             # 15m traded too often: fees ate the returns over a year
 fee_pct = 0.1                     # per side, in percent (spot taker 0.1%, futures ~0.05%)
+memory_trades = 10                # Laya reads the last 10 closed trades on the coin and their outcome
 
 [crypto.strategy]                 # a year of monthly out-of-sample tests (see README)
 signal = "laya"                   # "laya" or "votes" (the four trend votes; did better on crypto)
@@ -48,6 +50,7 @@ benchmark = "SPY"                 # for relative strength
 kline_interval = "1h"             # the candle size validated over a year (walkforward.py --rolling)
 fee_pct = 0.02                    # commission-free brokers; this approximates the spread
 poll_seconds = 30                 # Yahoo is unofficial, and hourly candles need no faster polling
+memory_trades = 3                 # Laya reads the last 3 closed trades on the stock and their outcome
 
 [stocks.strategy]                 # a year of monthly out-of-sample tests (see README)
 signal = "laya"                   # "laya" or "votes"
