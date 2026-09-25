@@ -76,6 +76,7 @@ button { font: inherit; color: inherit; }
 .tile canvas { width: 100%; height: 34px; display: block; }
 .minigauge { position: relative; height: 5px; border-radius: 3px; background: linear-gradient(90deg, rgba(208,52,44,.35), var(--chip) 45%, rgba(31,138,76,.35)); }
 .minigauge i { position: absolute; top: -3px; width: 3px; height: 11px; border-radius: 2px; background: var(--laya); transform: translateX(-1.5px); }
+.repeat { display: block; font-size: 11px; color: var(--muted); white-space: nowrap; }
 .pill { font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 5px; color: #fff; white-space: nowrap; }
 .pill.LONG, .pill.BUY { background: var(--up); } .pill.SHORT { background: var(--down); }
 .pill.CLOSE, .pill.SELL { background: var(--price); color: var(--bg); } .pill.HOLD { background: var(--hold); }
@@ -501,7 +502,7 @@ function drawDetail() {
 // --- Decision log --------------------------------------------------------------------------------------
 function renderLog() {
   const a = state.assets[ui.asset], rows = a.decisions || [], bt = state.mode === "backtest";
-  const key = `${ui.asset}:${rows.length}:${rows.length ? rows[rows.length - 1][0] : 0}:${ui.filter}:${[...ui.open].join(",")}:${Object.keys(ui.details).length}`;
+  const key = `${ui.asset}:${rows.length}:${rows.length ? rows[rows.length - 1][0] + ":" + (rows[rows.length - 1][8] || 0) : 0}:${ui.filter}:${[...ui.open].join(",")}:${Object.keys(ui.details).length}`;
   if (key === ui.logKey) return;
   ui.logKey = key;
   let shown = rows;
@@ -509,12 +510,12 @@ function renderLog() {
   else if (ui.filter === "changes") shown = rows.filter((r, i) => r[3] !== "HOLD" || i === 0 || stateParts(r[5]).summary !== stateParts(rows[i - 1][5]).summary || r[4] !== rows[i - 1][4]);
   $("detail").querySelector('[data-k="logcount"]').textContent = bt
     ? `· ${shown.length} trades`
-    : `· ${shown.length} shown · trades and changes kept, every round in the saved log`;
+    : `· ${shown.length} shown · trades and changes; unchanged rounds are counted (×N) on the row they repeat`;
   $("detail").querySelector('[data-k="log"]').innerHTML = shown.slice(-400).reverse().map((r) => {
     const open = ui.open.has(r[0]);
     const main = `<tr data-t="${r[0]}" class="${r[3] !== "HOLD" ? "trade" : ""}${open ? " open" : ""}" title="Click for the full context">
       <td><span class="caret">${open ? "▾" : "▸"}</span>${timeFmt(r[0], bt)}</td><td><span class="pill ${r[3]}">${r[3]}</span></td><td>${priceFmt(r[1])}</td>
-      <td>${r[2].toFixed(3)}</td><td>${esc(r[4])}</td><td class="read-cell">${stateShort(r[5])}</td><td>${fmt(r[6])}</td></tr>`;
+      <td>${r[2].toFixed(3)}</td><td>${esc(r[4])}${r[7] ? `<span class="repeat" title="Unchanged HOLD repeated every round since, latest P ${r[9].toFixed(3)}">×${r[7]} to ${timeFmt(r[8], bt)} · P ${r[9].toFixed(3)}</span>` : ""}</td><td class="read-cell">${stateShort(r[5])}</td><td>${fmt(r[6])}</td></tr>`;
     return open ? main + `<tr class="detail"><td colspan="7">${detailHtml(r, ui.details[`${ui.asset}@${r[0]}`])}</td></tr>` : main;
   }).join("") || `<tr><td colspan="7" style="text-align:left;color:var(--muted)">No decisions yet.</td></tr>`;
 }

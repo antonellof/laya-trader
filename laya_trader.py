@@ -55,7 +55,8 @@ def summary_of(state):
 def keep(entry, row, t_ms):
     """Keep a decision in the on-screen log only if it's a trade or something changed
     (the signal summary, or the reason). Unchanged HOLDs would otherwise push trades out
-    within minutes; every round is still in the saved log file."""
+    within minutes, so they only update the last row's repeat count, latest time and P;
+    every round is still in the saved log file."""
     rows, new = entry["decisions"], decision_row(t_ms, row)
     if (
         rows
@@ -63,13 +64,16 @@ def keep(entry, row, t_ms):
         and summary_of(rows[-1][5]) == summary_of(new[5])
         and rows[-1][4] == new[4]
     ):
+        last = rows[-1]
+        last[7:] = [(last[7] if len(last) > 7 else 1) + 1, t_ms, new[2]]
         return False
     rows.append(new)
     return True
 
 
 def decision_row(t_ms, row):
-    """[time, price, P(bullish), action, reason, what Laya read, equity]"""
+    """[time, price, P(bullish), action, reason, what Laya read, equity]; keep() appends
+    [rounds, last time, last P] when unchanged HOLDs repeat it."""
     return [
         t_ms,
         row["signals"]["price"],
