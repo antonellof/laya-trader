@@ -48,7 +48,9 @@ uv run python backtest.py --days 30 --markets stocks
 
 ### Online demo (Hugging Face Space)
 
-`./deploy_space.sh` publishes a read-only copy of the dashboard to a free Hugging Face Space (Gradio SDK on ZeroGPU hardware). There, Laya runs on the CPU with its [PyTorch runtime](https://github.com/NandhaKishorM/laya) and the same weights, one round every 10 seconds, and the Space rebuilds a 30-day backtest daily. Needs `uv run hf auth login` with a write token. Nothing persists: the paper account restarts with the Space, which sleeps after two days without visitors. On Linux, `core.py` picks the PyTorch runtime automatically (`LAYA_BACKEND=torch` or `mlx` to force one).
+**Live demo: [huggingface.co/spaces/antonellof/laya-trader](https://huggingface.co/spaces/antonellof/laya-trader)** (read-only).
+
+`./deploy_space.sh` publishes a read-only copy of the dashboard to a free Hugging Face Space (Gradio SDK on ZeroGPU hardware; `space/app.py` launches Gradio and routes the dashboard through its server). There, Laya runs on the CPU with its [PyTorch runtime](https://github.com/NandhaKishorM/laya) and the same weights, one round every 10 seconds, and the Space rebuilds a 30-day backtest daily. Needs `uv run hf auth login` with a write token. Nothing persists: the paper account restarts with the Space, which sleeps after two days without visitors. On Linux, `core.py` picks the PyTorch runtime automatically (`LAYA_BACKEND=torch` or `mlx` to force one).
 
 ## How it works
 

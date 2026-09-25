@@ -458,6 +458,8 @@ def main():
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser")
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
+    if args.interval:
+        config["interval_seconds"] = args.interval
     markets = load_markets(config)
     question, fmt = prompt_of(config)
 
@@ -511,8 +513,7 @@ def main():
                 except Exception as error:  # A network hiccup skips one round, not the run.
                     print(f"round skipped: {error}", file=sys.stderr)
                 done += 1
-                interval = args.interval or config["interval_seconds"]
-                time.sleep(max(0.0, interval - (time.monotonic() - tick)))
+                time.sleep(max(0.0, config["interval_seconds"] - (time.monotonic() - tick)))
     except KeyboardInterrupt:
         pass
     finally:

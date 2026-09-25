@@ -6,6 +6,7 @@ colorTo: gray
 sdk: gradio
 sdk_version: 6.28.0
 app_file: app.py
+python_version: "3.12"
 pinned: false
 license: apache-2.0
 short_description: Paper trading crypto and S&P 500 stocks with Laya

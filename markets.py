@@ -59,13 +59,15 @@ class Crypto:
         self.spot = self.SPOT
 
     def _spot(self, path, timeout=3):
+        base = self.spot  # assets are fetched in parallel: another thread may switch it
         try:
-            return get_json(f"{self.spot}{path}", timeout=timeout)
+            return get_json(f"{base}{path}", timeout=timeout)
         except RuntimeError as error:
-            if self.spot == self.SPOT and ("HTTP 451" in str(error) or "HTTP 403" in str(error)):
-                print("Binance API blocked here; using the market-data mirror", file=sys.stderr)
-                self.spot = self.SPOT_MIRROR
-                return get_json(f"{self.spot}{path}", timeout=timeout)
+            if base == self.SPOT and ("HTTP 451" in str(error) or "HTTP 403" in str(error)):
+                if self.spot == self.SPOT:
+                    print("Binance API blocked here; using the market-data mirror", file=sys.stderr)
+                    self.spot = self.SPOT_MIRROR
+                return get_json(f"{self.SPOT_MIRROR}{path}", timeout=timeout)
             raise
 
     def is_open(self, now=None):
