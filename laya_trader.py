@@ -37,6 +37,17 @@ HERE = Path(__file__).resolve().parent
 DASHBOARD = HERE / "dashboard.html"
 
 
+def keep(entry, row, t_ms):
+    """Keep a decision in the on-screen log only if it's a trade or something changed
+    (what Laya read, or the reason). Unchanged HOLDs would otherwise push trades out
+    within minutes; every round is still in the saved log file."""
+    rows, new = entry["decisions"], decision_row(t_ms, row)
+    if rows and new[3] == "HOLD" and rows[-1][5] == new[5] and rows[-1][4] == new[4]:
+        return False
+    rows.append(new)
+    return True
+
+
 def decision_row(t_ms, row):
     """[time, price, P(bullish), action, reason, what Laya read, equity]"""
     return [
@@ -103,8 +114,8 @@ class Live:
                 entry = self.data["assets"][asset]
             except (ValueError, KeyError):
                 continue
-            entry["decisions"].append(decision_row(t_ms, row))
-            self.remember(asset, t_ms, row)
+            if keep(entry, row, t_ms):
+                self.remember(asset, t_ms, row)
             count += 1
         return count
 
@@ -357,8 +368,8 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
                 "position": held,
                 "signals": s,
             }
-            entry["decisions"].append(decision_row(t_ms, row))
-            live.remember(asset, t_ms, row)
+            if keep(entry, row, t_ms):
+                live.remember(asset, t_ms, row)
         if log:
             log.write(json.dumps(row) + "\n")
     infer_ms = (time.perf_counter() - started) * 1000

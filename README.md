@@ -4,6 +4,8 @@ An experiment: every second, [Laya MLX](https://github.com/mizorewww/laya-mlx) r
 
 **Paper trading only.** No API keys, no orders, nothing is sent to an exchange or broker. Not financial advice.
 
+![Live dashboard: crypto and stocks together, with P(bullish), action and paper equity per asset](docs/screenshots/live-overview.png)
+
 ```bash
 ./run.sh                               # live loop + dashboard at http://127.0.0.1:8765
 uv run python backtest.py --days 7     # historical replay of every market, writes backtest.html
@@ -169,7 +171,7 @@ On restart, the dashboard reloads that day's history.
   - price chart with ▲ long, ▼ short and ● close markers, and hover to inspect any point
   - P(bullish) against the thresholds
   - stats, and the sentence Laya read with the raw values
-- **Decision log**, filtered as Trades / Changes / All. **Click any row for its full context:**
+- **Decision log**, filtered as Trades or All changes. On screen it keeps every trade and every round where something changed; unchanged repeats are only in the saved file, so trades never scroll away. **Click any row for its full context:**
   - how the strategy chose the action
   - every signal
   - the exact request sent to Laya
@@ -179,7 +181,21 @@ On restart, the dashboard reloads that day's history.
 
   **copy JSON** copies it all.
 
+![Detail panel for SOL: price, Laya's P(bullish) over time against the thresholds, position, what Laya read, and the decision log](docs/screenshots/live-detail.png)
+
+Clicking a decision opens its full context: how the strategy chose the action, the trade and resulting position, and every signal value…
+
+![An expanded LONG decision: the rule that fired, the trade, the position after it, and all signals](docs/screenshots/decision-context.png)
+
+…and exactly what Laya was asked, the token sequence its encoder read, and its raw answer:
+
+![The request sent to Laya, the decoded encoder input and Laya's answer for the same decision](docs/screenshots/decision-prompt.png)
+
 **/backtest** shows the latest backtest report in the same layout, plus a summary table and the return curves of Laya vs rules-only vs buy & hold. Pick the days and markets and press **Run**. The backtest runs as a separate process, so live trading is unaffected, and the page reloads when it's done.
+
+![Backtest report: averages for Laya, rules only and buy & hold, and each asset's result against holding it](docs/screenshots/backtest-overview.png)
+
+![Backtest detail for META: trades on the price chart, P(bullish) over time, return curves of Laya vs rules only vs buy & hold, and the trade log](docs/screenshots/backtest-detail.png)
 
 ## Backtest
 

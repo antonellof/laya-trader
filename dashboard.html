@@ -371,7 +371,7 @@ function buildDetail() {
     <div class="log">
       <div class="log-head">
         <h3>Decision log <span class="meta" data-k="logcount"></span></h3>
-        <span>${bt ? "" : `<span class="seg" role="group" aria-label="Filter"><button data-f="trades">Trades</button><button data-f="changes">Changes</button><button data-f="all">All</button></span>
+        <span>${bt ? "" : `<span class="seg" role="group" aria-label="Filter"><button data-f="trades">Trades</button><button data-f="changes">All changes</button></span>
           <a class="dl" href="/decisions.jsonl" download>download saved log</a>`}</span>
       </div>
       <div class="logbox"><table><thead><tr><th>Time</th><th>Action</th><th>Price</th><th>P(bullish)</th><th>Reason</th><th style="text-align:left">What Laya read</th><th>Equity</th></tr></thead><tbody data-k="log"></tbody></table></div>
@@ -456,7 +456,9 @@ function renderLog() {
   let shown = rows;
   if (ui.filter === "trades") shown = rows.filter((r) => r[3] !== "HOLD");
   else if (ui.filter === "changes") shown = rows.filter((r, i) => r[3] !== "HOLD" || i === 0 || r[5] !== rows[i - 1][5] || r[4] !== rows[i - 1][4]);
-  $("detail").querySelector('[data-k="logcount"]').textContent = `· ${shown.length} of ${rows.length}${bt ? " trades" : " decisions"}`;
+  $("detail").querySelector('[data-k="logcount"]').textContent = bt
+    ? `· ${shown.length} trades`
+    : `· ${shown.length} shown · trades and changes kept, every round in the saved log`;
   $("detail").querySelector('[data-k="log"]').innerHTML = shown.slice(-400).reverse().map((r) => {
     const open = ui.open.has(r[0]);
     const main = `<tr data-t="${r[0]}" class="${r[3] !== "HOLD" ? "trade" : ""}${open ? " open" : ""}" title="Click for the full context">
@@ -486,7 +488,10 @@ async function toggleDetail(t) {
 }
 
 const num = (v) => typeof v === "number" ? (Math.abs(v) >= 1000 ? fmt(v, 2) : Math.abs(v) >= 1 ? fmt(v, 4) : v.toPrecision(4)) : Array.isArray(v) ? esc(`[${v.join(", ")}]`) : v == null ? "–" : esc(v);
-const dl = (obj) => obj ? `<dl>${Object.entries(obj).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${typeof v === "object" && v && !Array.isArray(v) ? esc(JSON.stringify(v)) : num(v)}</dd>`).join("")}</dl>` : "<span class='meta'>–</span>";
+// Epoch-second fields (trade time, position opened) read as dates, not as big numbers.
+const value = (k, v) => (k === "at" || k === "opened") && typeof v === "number" && v > 1e9
+  ? esc(new Date(v * 1000).toLocaleString()) : typeof v === "object" && v && !Array.isArray(v) ? esc(JSON.stringify(v)) : num(v);
+const dl = (obj) => obj ? `<dl>${Object.entries(obj).map(([k, v]) => `<dt>${esc(k)}</dt><dd>${value(k, v)}</dd>`).join("")}</dl>` : "<span class='meta'>–</span>";
 
 function detailHtml(r, d) {
   if (d === "loading") return `<div class="detail-box"><span class="meta">Loading…</span></div>`;
