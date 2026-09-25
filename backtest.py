@@ -39,9 +39,13 @@ PLACEHOLDER = "/*__DATA__*/null"
 WARMUP = 100  # candles of history each decision sees, as in the live loop
 
 
-def prompt_of(config):
+def prompt_of(config, market=None):
+    """(question, state format); a market can set its own `format`."""
     prompt = config.get("prompt", {})
-    return prompt.get("question", QUESTION), prompt.get("format", "good_bad")
+    fmt = prompt.get("format", "good_bad")
+    if market is not None:
+        fmt = market.cfg.get("format", fmt)
+    return prompt.get("question", QUESTION), fmt
 
 
 def memory_of(config, market=None):
@@ -285,7 +289,9 @@ def main():
         if market.interval not in INTERVAL_MS:
             parser.error(f"{market.kind}.kline_interval must be one of {', '.join(INTERVAL_MS)}")
         strategy, paper = market.cfg["strategy"], paper_of(config, market)
+        prompt = prompt_of(config, market)
         market_info[market.kind] = {
+            "format": prompt[1],
             "memory_trades": memory_of(config, market),
             "label": market.label,
             "rules": strategy,

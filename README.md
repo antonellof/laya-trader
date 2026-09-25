@@ -120,7 +120,14 @@ Set per market with `memory_trades` (defaults: crypto 10, stocks 3; 0 = off).
 
 `memory_details = true` adds the whole book as well: trade counts by side, winners and losers, realized net, and the open position's quantity, size, leverage, entry and stop. **It made things worse.** On 8 stocks over the same 9 unseen months, the default strategy went from +11.5% (no memory) to +1.1% with the detailed memory, while time in the market fell from 66% to 33%. Laya became far too cautious. It's off by default.
 
-**Detailed state wording** (`[prompt] format = "detailed"`: the Good/Bad summary plus every indicator value) was tested the same way and also hurt stocks: +11.5% → +1.9%. Laya reads the summary well but not the numbers. The default wording stays `good_bad`. Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
+**Detailed state wording** (`format = "detailed"`: the Good/Bad summary plus every indicator value) was tested the same way. **It depends on the market**, so wording and memory detail are set per market:
+
+| 9 unseen months, previous defaults | Current wording, no memory | Current wording + detailed memory | Detailed wording, no memory | Detailed wording + detailed memory |
+|---|---|---|---|---|
+| Stocks (8) | **+11.5%** | +1.1% | +1.9% | +0.3% |
+| Crypto (3) | −0.3% | −5.0% | +4.9% | **+6.3%** |
+
+On stocks, Laya reads the summary well, and the numbers and the detailed memory only make it hesitate. On crypto, the values add about 5 points, and with them the detailed memory helps too. Defaults: **crypto `format = "detailed"`, `memory_details = true`; stocks `good_bad` with the short memory**. The crypto numbers were measured on the earlier spot/4h setup; a confirmation on the futures setup is in `logs/`. Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
 
 Tested on 9 unseen months (a year of 1h candles; `walkforward.py --rolling --no-search --variants memory`):
 
@@ -435,6 +442,8 @@ On **1h candles**, the monthly re-chosen strategies made **+8.5%** while buy & h
 | `model` | aac6fef/laya-multilingual-mlx | Laya checkpoint |
 | `paper.capital_usdt` | 1000 | paper balance per asset |
 | `prompt.question` / `format` | *outlook* / good_bad | what Laya is asked, and how the sentence is worded |
+| `<market>.format` | detailed crypto, good_bad stocks | per-market wording: `good_bad`, `lists`, `detailed` (with values), `values` |
+| `<market>.memory_details` | true crypto, false stocks | add the open position's size/entry/stop and trade counts to the memory |
 | `<market>.memory_trades` | 10 crypto, 3 stocks | how many recent closed trades Laya reads (0 = none) |
 | `<market>.symbols` | see above | assets (crypto quoted in USDT) |
 | `<market>.kline_interval` | 1h | candle size: 1m, 5m, 15m, 1h |

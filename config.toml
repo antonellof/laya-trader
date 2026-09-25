@@ -19,7 +19,8 @@ symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
 kline_interval = "1h"             # 15m traded too often: fees ate the returns over a year
 fee_pct = 0.05                    # per side, % (Binance USD-M futures taker 0.05%)
 memory_trades = 10                # Laya reads the last 10 closed trades on the coin and their outcome
-memory_details = false            # also the open position's size/entry/stop and trade counts (hurt stocks)
+memory_details = true             # also the open position's size/entry/stop and trade counts (helped crypto)
+format = "detailed"               # Good/Bad summary plus indicator values: +5 points on crypto (hurt stocks)
 
 [crypto.strategy]                 # faster futures profile, tested on 9 unseen months (see README)
 signal = "laya"                   # "laya" or "votes" (the four trend votes; did better on crypto)

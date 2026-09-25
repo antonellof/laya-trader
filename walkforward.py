@@ -56,13 +56,13 @@ def split(prepared, cut_ms):
     return part(lambda t: t <= cut_ms), part(lambda t: t > cut_ms)
 
 
-def evaluate(parts, strategy, paper, score, candle_seconds, ask=None, memory=0):
+def evaluate(parts, strategy, paper, score, candle_seconds, ask=None, memory=0, details=False):
     rows = []
     for prepared in parts.values():
         if not prepared["steps"]:
             continue
         account, equities, _ = simulate(
-            prepared, strategy, paper, score, False, candle_seconds, ask, memory
+            prepared, strategy, paper, score, False, candle_seconds, ask, memory, details
         )
         rows.append(
             (
@@ -382,6 +382,7 @@ def compare_formats(args, config, market, agent, memo, prompt):
                     candle_seconds,
                     ask,
                     mem,
+                    bool(market.cfg.get("memory_details", False)),
                 )
                 for a, b in folds
             ]
@@ -420,6 +421,8 @@ def compare_formats(args, config, market, agent, memo, prompt):
 def rolling(args, config, market, agent, memo, prompt):
     """Rolling walk-forward: choose on train_days, test on the next test_days, slide by
     test_days, repeat. Every test month is data the chosen strategy never saw."""
+    prompt = prompt_of(config, market)
+    details = bool(market.cfg.get("memory_details", False))
     if args.symbols:
         market.symbols = [x.strip().upper() for x in args.symbols.split(",")]
     market.interval = args.interval
@@ -459,7 +462,9 @@ def rolling(args, config, market, agent, memo, prompt):
 
     def mean_return(start, end, strategy, score, memory=0, paper_used=None):
         parts = {k: window(v, start, end) for k, v in prepared.items()}
-        return evaluate(parts, strategy, paper_used or paper, score, candle_seconds, ask, memory)
+        return evaluate(
+            parts, strategy, paper_used or paper, score, candle_seconds, ask, memory, details
+        )
 
     def hold_return(start, end):
         values = []

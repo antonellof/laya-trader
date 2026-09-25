@@ -80,6 +80,7 @@ class Live:
             "prompt": dict(zip(("question", "format"), prompt_of(config))),
             "markets": {
                 m.kind: {
+                    "format": prompt_of(config, m)[1],
                     "memory_trades": memory_of(config, m),
                     "label": m.label,
                     "rules": m.cfg["strategy"],
@@ -312,7 +313,7 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
     for market, symbol, s in snapshots:
         asset = f"{market.kind}:{symbol}"
         account = accounts[asset]
-        state = describe(s, market.noun, fmt)
+        state = describe(s, market.noun, prompt_of(config, market)[1])
         memory = memory_of(config, market)
         if memory:  # the asset's recent trades and their outcome, in words
             details = bool(market.cfg.get("memory_details", False))
