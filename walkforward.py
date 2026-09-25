@@ -260,6 +260,11 @@ def compare_formats(args, config, market, agent, memo, prompt):
                     (prompt[0], fmt),
                     quiet=True,
                 )
+                print(
+                    f"    {fmt} {symbol}: {len(prepared[symbol]['steps'])} candles",
+                    file=sys.stderr,
+                    flush=True,
+                )
             except Exception as error:
                 print(f"  {symbol}: skipped ({error})", file=sys.stderr)
         print(f"  {fmt}: prepared in {time.perf_counter() - started:.0f} s", file=sys.stderr)
@@ -273,6 +278,7 @@ def compare_formats(args, config, market, agent, memo, prompt):
                 ]
                 hold.append(statistics.mean(values))
         for mem in sorted({0, memory}):
+            print(f"  {fmt}: simulating, memory {mem} trades...", file=sys.stderr, flush=True)
             results = [
                 evaluate(
                     {k: window(v, a, b) for k, v in prepared.items()},
