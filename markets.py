@@ -245,13 +245,16 @@ class Stocks:
         self.benchmark = cfg.get("benchmark", "SPY")
         self.session = None  # (start, end) of today's regular session, epoch seconds
 
-    def _chart(self, symbol, interval, **params):
+    def _chart(self, symbol, interval, session=False, **params):
+        """session=True only for the traded stocks' own candles: indexes such as ^VIX report
+        much longer hours, and taking the session from them made the market look open at
+        3 am New York time."""
         query = "&".join(f"{k}={v}" for k, v in {"interval": interval, **params}.items())
         data = get_json(f"{self.CHART}{symbol.replace('^', '%5E')}?{query}", timeout=10)
         result = data["chart"]["result"][0]
         meta = result.get("meta", {})
         regular = meta.get("currentTradingPeriod", {}).get("regular")
-        if regular:
+        if session and regular:
             self.session = (regular["start"], regular["end"])
         step = INTERVAL_MS.get(interval, DAY_MS)
         quote = result["indicators"]["quote"][0]
@@ -306,7 +309,10 @@ class Stocks:
         ttl = self.refresh["context_seconds"]
         poll = self.cfg.get("poll_seconds", 15)
         klines = cache.get(
-            f"{symbol}:fast", poll, lambda: self._chart(symbol, self.interval, range="5d"), []
+            f"{symbol}:fast",
+            poll,
+            lambda: self._chart(symbol, self.interval, session=True, range="5d"),
+            [],
         )
         daily = cache.get(f"{symbol}:1d", ttl, lambda: self._chart(symbol, "1d", range="6mo"), [])
         hourly = cache.get(f"{symbol}:1h", ttl, lambda: self._chart(symbol, "1h", range="1mo"), [])
