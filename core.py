@@ -314,7 +314,63 @@ def facts(s):
     return [t for ok, t in bullish if ok], [t for ok, t in bearish if ok]
 
 
-PROMPT_FORMATS = ("good_bad", "lists")
+PROMPT_FORMATS = ("good_bad", "lists", "detailed", "values")
+
+
+def indicator_values(s):
+    """The raw indicator values as short labelled phrases, rounded so the text stays
+    readable (and identical market states still produce identical text)."""
+
+    def pct(v, digits=1):
+        return f"{v:+.{digits}f}%"
+
+    htf = s["htf_label"]
+    out = [
+        f"RSI14 {s['rsi14']:.0f}",
+        f"RSI7 {s['rsi7']:.0f}",
+        f"RSI change over 3 candles {s['rsi14_slope']:+.0f}",
+        f"price vs EMA20 {pct(s['dist_ema20_pct'], 2)}",
+        f"MACD {'positive' if s['macd'] > 0 else 'negative'} and "
+        f"{'rising' if s['macd_slope'] > 0 else 'falling'}",
+        f"trend votes {sum(s['votes']):+d} of 4",
+        f"volatility ATR3/ATR14 {s['atr_ratio']:.1f}",
+        f"volume {s['volume_ratio']:.1f}x average",
+    ]
+    if s.get("buy_ratio") is not None:
+        out.append(f"buyers {s['buy_ratio'] * 100:.0f}% of recent volume")
+    if s.get("rsi14_htf") is not None:
+        out.append(f"{htf} RSI14 {s['rsi14_htf']:.0f}")
+    if s.get("macd_htf") is not None:
+        out.append(f"{htf} MACD {'positive' if s['macd_htf'] > 0 else 'negative'}")
+    if s.get("atr_ratio_htf") is not None:
+        out.append(f"{htf} volatility {s['atr_ratio_htf']:.1f}")
+    if s.get("volume_ratio_1h") is not None:
+        out.append(f"last hour volume {s['volume_ratio_1h']:.1f}x average")
+    if s.get("change_day_pct") is not None:
+        out.append(f"{s['day_label']} change {pct(s['change_day_pct'])}")
+    if s.get("range_day_pos") is not None:
+        out.append(f"at {s['range_day_pos'] * 100:.0f}% of the {s['day_label']} range")
+    pv = s.get("pivots")
+    if pv:
+        price = s["price"]
+        out.append(
+            f"{pct((price / pv['s1'] - 1) * 100)} from support S1, {pct((price / pv['r1'] - 1) * 100)} from resistance R1"
+        )
+    if s.get("oi_change_1h_pct") is not None:
+        out.append(f"open interest 1h {pct(s['oi_change_1h_pct'])}")
+    if s.get("funding") is not None:
+        out.append(f"funding {s['funding'] * 100:.3f}%")
+    if s.get("long_short") is not None:
+        out.append(f"long/short ratio {s['long_short']:.2f}")
+    if s.get("taker_ratio") is not None:
+        out.append(f"taker buy/sell {s['taker_ratio']:.2f}")
+    sentiment = s.get("sentiment") or {}
+    if sentiment.get("value") is not None:
+        name = "VIX" if sentiment.get("kind") == "vix" else "Fear & Greed"
+        out.append(f"{name} {sentiment['value']:.0f}")
+    if s.get("relative_strength") is not None:
+        out.append(f"vs S&P 500 today {pct(s['relative_strength'])}")
+    return out
 
 
 def describe(s, market="Crypto", fmt="good_bad"):
@@ -322,19 +378,36 @@ def describe(s, market="Crypto", fmt="good_bad"):
 
     good_bad: "Good: <bullish facts>. Bad: <bearish facts>."
     lists:    "Bullish signals: ... Bearish signals: ..." (neutral wording)
+    detailed: good_bad, then "Values: <every indicator with its number>."
+    values:   only the values, no bullish / bearish interpretation
     """
     good, bad = facts(s)
     if fmt == "lists":
         text = f"Bullish signals: {', '.join(good) or 'none'}. Bearish signals: {', '.join(bad) or 'none'}."
+    elif fmt == "values":
+        text = f"Values: {', '.join(indicator_values(s))}."
     else:
         text = f"Good: {', '.join(good)}." if good else ""
         if bad:
             text += f" Bad: {', '.join(bad)}."
         text = text.strip() or "No clear signals."
+        if fmt == "detailed":
+            text += f" Values: {', '.join(indicator_values(s))}."
     state = f"{market} market signals. {text}"
     if s.get("headlines"):
         state += " Recent headlines: " + " | ".join(s["headlines"][:3]) + "."
     return state
+
+
+def with_memory(state, memory):
+    """Add the memory text to a state. In the detailed format it goes before the values,
+    so if the 512-token limit cuts anything, it cuts trailing values, not the memory."""
+    if not memory:
+        return state
+    if " Values: " in state:
+        head, values = state.split(" Values: ", 1)
+        return f"{head} {memory} Values: {values}"
+    return f"{state} {memory}"
 
 
 # --- Memory: the asset's own recent trades, in words ------------------------------------------
@@ -363,14 +436,32 @@ def memory_text(account, n, price, now):
         text = f"Your recent trades on this asset: {'; '.join(parts)}. {losses} of the last {len(parts)} lost money."
     else:
         text = "No earlier trades on this asset."
+    # The whole book on this asset: counts by side, winners / losers, net result.
+    if trips:
+        longs = sum(e["action"] == "LONG" for e, _, _ in trips)
+        wins = sum(r >= 0 for _, r, _ in trips)
+        net = (account.balance / account.start - 1) * 100
+        text += (
+            f" Trades so far on this asset: {len(trips)} ({longs} long, {len(trips) - longs} short), "
+            f"{wins} winner{'s' * (wins != 1)} and {len(trips) - wins} loser"
+            f"{'s' * (len(trips) - wins != 1)}, realized net {net:+.1f}%."
+        )
     held = account.position
     if held:
         hours = (now - held["opened"]) / 3600
         move = held["side"] * (price / held["entry"] - 1) * 100
         side = "long" if held["side"] > 0 else "short"
+        notional = held["qty"] * price
+        equity = account.equity(price)
         text += (
-            f" Now: {side} for {hours:.0f} hours, {'up' if move >= 0 else 'down'} {abs(move):.1f}%."
+            f" Open position: {side} {held['qty']:.4g} units ({notional:,.0f} USD, "
+            f"{notional / equity:.2f}x equity), entry {held['entry']:.6g}, now {price:.6g} "
+            f"({move:+.1f}%), open for {hours:.0f} hours"
         )
+        stop, _ = account._stop(held)
+        text += f", stop {stop:.6g}." if stop is not None else ", no stop."
+    else:
+        text += " No open position."
     return text
 
 

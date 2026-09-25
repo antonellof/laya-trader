@@ -31,6 +31,7 @@ from core import (
     funding_times_between,
     load_agent,
     memory_text,
+    with_memory,
 )
 from markets import INTERVAL_MS, load_markets
 
@@ -314,7 +315,7 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
         state = describe(s, market.noun, fmt)
         memory = memory_of(config, market)
         if memory:  # the asset's recent trades and their outcome, in words
-            state = f"{state} {memory_text(account, memory, s['price'], now)}"
+            state = with_memory(state, memory_text(account, memory, s["price"], now))
         answer, reused = laya(state)
         calls += not reused
         p = answer["p"]

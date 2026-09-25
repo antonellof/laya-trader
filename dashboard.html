@@ -98,6 +98,7 @@ button { font: inherit; color: inherit; }
 .gauge .mark { position: absolute; top: 0; width: 1px; height: 12px; background: var(--muted); }
 .read { margin-top: 10px; font-size: 12.5px; background: var(--chip); border-radius: 8px; padding: 8px 10px; }
 .good { color: var(--up); } .bad { color: var(--down); }
+.vals { color: var(--muted); font-size: .95em; }
 .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--muted); margin-top: 6px; }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .sw { width: 12px; height: 3px; border-radius: 2px; display: inline-block; }
@@ -367,7 +368,8 @@ function stateText(text) {
     .replace(/Good: ([^.]*)\./, '<span class="good">▲ $1</span> ')
     .replace(/Bad: ([^.]*)\./, '<span class="bad">▼ $1</span> ')
     .replace(/Bullish signals: ([^.]*)\./, '<span class="good">▲ $1</span> ')
-    .replace(/Bearish signals: ([^.]*)\./, '<span class="bad">▼ $1</span> ');
+    .replace(/Bearish signals: ([^.]*)\./, '<span class="bad">▼ $1</span> ')
+    .replace(/Values: (.*)$/, '<span class="vals">$1</span>');
 }
 
 function buildDetail() {

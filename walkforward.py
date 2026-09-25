@@ -19,7 +19,16 @@ import time
 import tomllib
 from pathlib import Path
 
-from backtest import asker, buy_and_hold, max_drawdown, paper_of, prepare, prompt_of, simulate
+from backtest import (
+    asker,
+    buy_and_hold,
+    max_drawdown,
+    memory_of,
+    paper_of,
+    prepare,
+    prompt_of,
+    simulate,
+)
 from core import load_agent
 from markets import INTERVAL_MS, load_markets
 
@@ -211,6 +220,103 @@ def window(prepared, start_ms, end_ms):
     }
 
 
+def compare_formats(args, config, market, agent, memo, prompt):
+    """Same folds, same default strategy; only the wording of Laya's state changes."""
+    if args.symbols:
+        market.symbols = [x.strip().upper() for x in args.symbols.split(",")]
+    market.interval = args.interval
+    candle_seconds = INTERVAL_MS[market.interval] / 1000
+    paper, base = paper_of(config, market), market.cfg["strategy"]
+    memory = memory_of(config, market)
+    day = 86_400_000
+    end_ms = int(time.time() * 1000)
+    start_ms = end_ms - int(args.days * day)
+    folds, cursor = [], start_ms + int(args.train_days * day)
+    while cursor + int(args.test_days * day) <= end_ms + day:
+        folds.append((cursor, min(cursor + int(args.test_days * day), end_ms)))
+        cursor += int(args.test_days * day)
+    ask = asker(agent, memo, prompt[0])
+
+    def compound(values):
+        total = 1.0
+        for v in values:
+            total *= 1 + v / 100
+        return (total - 1) * 100
+
+    rows, hold = [], None
+    for fmt in args.formats.split(","):
+        started = time.perf_counter()
+        prepared = {}
+        for symbol in market.symbols:
+            try:
+                prepared[symbol] = prepare(
+                    market,
+                    symbol,
+                    market.interval,
+                    start_ms,
+                    end_ms,
+                    agent,
+                    memo,
+                    (prompt[0], fmt),
+                    quiet=True,
+                )
+            except Exception as error:
+                print(f"  {symbol}: skipped ({error})", file=sys.stderr)
+        print(f"  {fmt}: prepared in {time.perf_counter() - started:.0f} s", file=sys.stderr)
+        if hold is None:
+            hold = []
+            for a, b in folds:
+                values = [
+                    (buy_and_hold(window(v, a, b), paper)[-1] / paper["capital_usdt"] - 1) * 100
+                    for v in prepared.values()
+                    if window(v, a, b)["steps"]
+                ]
+                hold.append(statistics.mean(values))
+        for mem in sorted({0, memory}):
+            results = [
+                evaluate(
+                    {k: window(v, a, b) for k, v in prepared.items()},
+                    base,
+                    paper,
+                    "p",
+                    candle_seconds,
+                    ask,
+                    mem,
+                )
+                for a, b in folds
+            ]
+            returns = [r["return"] for r in results]
+            rows.append(
+                (
+                    f"{fmt}, {'memory ' + str(mem) + ' trades' if mem else 'no memory'}",
+                    compound(returns),
+                    sum(v > 0 for v in returns),
+                    sum(x > y for x, y in zip(returns, hold)),
+                    min(returns),
+                    min(r["drawdown"] for r in results),
+                    min(r["worst_trade"] for r in results),
+                    statistics.mean(r["exposure"] for r in results) * 100,
+                )
+            )
+    print(
+        f"\n{market.label}: {len(market.symbols)} assets, {len(folds)} test months, default strategy, "
+        f"state wording compared.\n"
+    )
+    print(
+        f"{'state format':<34}{'compounded':>11}{'months +':>10}{'beat hold':>10}{'worst month':>13}"
+        f"{'worst DD':>10}{'worst trade':>13}{'in market':>11}"
+    )
+    n = len(folds)
+    for name, comp, pos, beat, worst, dd, trade, exposure in rows:
+        print(
+            f"{name:<34}{comp:>+10.2f}%{pos:>7}/{n}{beat:>7}/{n}{worst:>+12.2f}%{dd:>+9.2f}%"
+            f"{trade:>+12.2f}%{exposure:>10.0f}%"
+        )
+    print(
+        f"{'buy & hold':<34}{compound(hold):>+10.2f}%{sum(v > 0 for v in hold):>7}/{n}{'':>10}{min(hold):>+12.2f}%"
+    )
+
+
 def rolling(args, config, market, agent, memo, prompt):
     """Rolling walk-forward: choose on train_days, test on the next test_days, slide by
     test_days, repeat. Every test month is data the chosen strategy never saw."""
@@ -394,6 +500,9 @@ def main():
     parser.add_argument(
         "--no-search", action="store_true", help="--rolling: skip the grid, only compare variants"
     )
+    parser.add_argument(
+        "--formats", help="--rolling: compare state formats, e.g. good_bad,detailed,values"
+    )
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
     markets = load_markets(config)
@@ -403,7 +512,10 @@ def main():
     end_ms = int(time.time() * 1000)
     if args.rolling:
         for market in markets:
-            rolling(args, config, market, agent, memo, prompt)
+            if args.formats:
+                compare_formats(args, config, market, agent, memo, prompt)
+            else:
+                rolling(args, config, market, agent, memo, prompt)
         return 0
 
     for market in markets:

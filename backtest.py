@@ -29,6 +29,7 @@ from core import (
     funding_times_between,
     load_agent,
     memory_text,
+    with_memory,
 )
 from markets import INTERVAL_MS, load_markets, value_at
 
@@ -120,7 +121,7 @@ def simulate(
         before = account.position
         score, laya, state = step[score_key], step["laya"], step["state"]
         if use_memory:
-            state = f"{state} {memory_text(account, memory, s['price'], now)}"
+            state = with_memory(state, memory_text(account, memory, s["price"], now))
             laya = ask(state)
             score = laya["p"]
         action, reason, fill = account.decide(score, s, now, s["high"], s["low"])
