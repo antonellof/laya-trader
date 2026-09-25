@@ -145,6 +145,7 @@ a.dl { font-size: 12px; color: var(--muted); }
 .runlog { margin: 8px 0 0; font: 11.5px/1.4 ui-monospace, Menlo, monospace; color: var(--muted); white-space: pre-wrap; max-height: 120px; overflow: auto; }
 .empty { padding: 40px 16px; text-align: center; color: var(--muted); }
 .foot { margin-top: 18px; color: var(--muted); font-size: 12px; }
+.foot a { color: var(--accent); }
 </style>
 </head>
 <body>
@@ -184,7 +185,7 @@ a.dl { font-size: 12px; color: var(--muted); }
     <p class="meta">Same candles, fees and exits for all three. “Rules only” runs the same strategy with the four trend votes in place of Laya. A short window is noise, not evidence.</p>
   </section>
 
-  <p class="foot">Laya MLX reads technical, order-flow and sentiment signals and returns P(bullish); each market's strategy turns it into LONG / SHORT / CLOSE / HOLD, sizes positions from risk and caps leverage. Paper positions only; nothing is sent to an exchange or broker. Not financial advice. <span id="prompt"></span></p>
+  <p class="foot">Laya reads technical, order-flow and sentiment signals and returns P(bullish); each market's strategy turns it into LONG / SHORT / CLOSE / HOLD, sizes positions from risk and caps leverage. Paper positions only; nothing is sent to an exchange or broker. Not financial advice. <span id="prompt"></span><br>Source, docs and results: <a href="https://github.com/antonellof/laya-trader" target="_blank" rel="noopener">github.com/antonellof/laya-trader</a></p>
 </div>
 
 <script>
