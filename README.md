@@ -116,7 +116,11 @@ bought on a bullish reading (P 0.68), made 8.6% (time exit); … 4 of the last 5
 Now: long for 8 hours, down 3.2%.
 ```
 
-Set per market with `memory_trades` (defaults: crypto 10, stocks 3; 0 = off). Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
+Set per market with `memory_trades` (defaults: crypto 10, stocks 3; 0 = off).
+
+`memory_details = true` adds the whole book as well: trade counts by side, winners and losers, realized net, and the open position's quantity, size, leverage, entry and stop. **It made things worse.** On 8 stocks over the same 9 unseen months, the default strategy went from +11.5% (no memory) to +1.1% with the detailed memory, while time in the market fell from 66% to 33%. Laya became far too cautious. It's off by default.
+
+**Detailed state wording** (`[prompt] format = "detailed"`: the Good/Bad summary plus every indicator value) was tested the same way and also hurt stocks: +11.5% → +1.9%. Laya reads the summary well but not the numbers. The default wording stays `good_bad`. Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
 
 Tested on 9 unseen months (a year of 1h candles; `walkforward.py --rolling --no-search --variants memory`):
 

@@ -103,7 +103,15 @@ def prepare(market, symbol, interval, start_ms, end_ms, agent, memo, prompt, qui
 
 
 def simulate(
-    prepared, strategy, paper, score_key="p", record=False, candle_seconds=900, ask=None, memory=0
+    prepared,
+    strategy,
+    paper,
+    score_key="p",
+    record=False,
+    candle_seconds=900,
+    ask=None,
+    memory=0,
+    memory_details=False,
 ):
     """Run one strategy over prepared candles. Cheap: no network and no model, unless
     `memory` is on: then Laya also reads this account's recent trades, so its answer
@@ -121,7 +129,9 @@ def simulate(
         before = account.position
         score, laya, state = step[score_key], step["laya"], step["state"]
         if use_memory:
-            state = with_memory(state, memory_text(account, memory, s["price"], now))
+            state = with_memory(
+                state, memory_text(account, memory, s["price"], now, memory_details)
+            )
             laya = ask(state)
             score = laya["p"]
         action, reason, fill = account.decide(score, s, now, s["high"], s["low"])
@@ -187,9 +197,9 @@ def paper_of(config, market):
     return {"capital_usdt": config["paper"]["capital_usdt"], "fee_pct": market.cfg["fee_pct"]}
 
 
-def report(prepared, strategy, paper, candle_seconds, ask=None, memory=0):
+def report(prepared, strategy, paper, candle_seconds, ask=None, memory=0, memory_details=False):
     laya, laya_eq, decisions = simulate(
-        prepared, strategy, paper, "p", True, candle_seconds, ask, memory
+        prepared, strategy, paper, "p", True, candle_seconds, ask, memory, memory_details
     )
     rules, rules_eq, _ = simulate(prepared, strategy, paper, "rule", False, candle_seconds)
     hold_eq = buy_and_hold(prepared, paper)
@@ -304,6 +314,7 @@ def main():
                     INTERVAL_MS[market.interval] / 1000,
                     asker(agent, memo, prompt[0]),
                     memory_of(config, market),
+                    bool(market.cfg.get("memory_details", False)),
                 ),
             }
 

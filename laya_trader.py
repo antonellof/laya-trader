@@ -315,7 +315,8 @@ def round_trip(laya, fmt, markets, config, cache, accounts, pool, live, log):
         state = describe(s, market.noun, fmt)
         memory = memory_of(config, market)
         if memory:  # the asset's recent trades and their outcome, in words
-            state = with_memory(state, memory_text(account, memory, s["price"], now))
+            details = bool(market.cfg.get("memory_details", False))
+            state = with_memory(state, memory_text(account, memory, s["price"], now, details))
         answer, reused = laya(state)
         calls += not reused
         p = answer["p"]

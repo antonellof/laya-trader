@@ -413,10 +413,14 @@ def with_memory(state, memory):
 # --- Memory: the asset's own recent trades, in words ------------------------------------------
 
 
-def memory_text(account, n, price, now):
+def memory_text(account, n, price, now, details=False):
     """The last n closed trades on this asset with their outcome, most recent first, plus
-    the open position. Laya doesn't learn between calls; this is how it sees what its
-    earlier readings led to."""
+    a short note on the open position. Laya doesn't learn between calls; this is how it
+    sees what its earlier readings led to.
+
+    details=True adds the whole book (trade counts by side, winners, realized net) and
+    the open position's quantity, size, entry and stop. Tested on stocks, that made
+    Laya far too cautious (+11.5% -> +1.1%), so it's off by default."""
     trips, entry = [], None
     for trade in account.trades:
         if trade["action"] in ("LONG", "SHORT"):
@@ -436,6 +440,14 @@ def memory_text(account, n, price, now):
         text = f"Your recent trades on this asset: {'; '.join(parts)}. {losses} of the last {len(parts)} lost money."
     else:
         text = "No earlier trades on this asset."
+    held = account.position
+    if not details:
+        if held:
+            hours = (now - held["opened"]) / 3600
+            move = held["side"] * (price / held["entry"] - 1) * 100
+            side = "long" if held["side"] > 0 else "short"
+            text += f" Now: {side} for {hours:.0f} hours, {'up' if move >= 0 else 'down'} {abs(move):.1f}%."
+        return text
     # The whole book on this asset: counts by side, winners / losers, net result.
     if trips:
         longs = sum(e["action"] == "LONG" for e, _, _ in trips)

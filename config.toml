@@ -19,6 +19,7 @@ symbols = ["BTC", "ETH", "SOL"]   # quoted against USDT
 kline_interval = "1h"             # 15m traded too often: fees ate the returns over a year
 fee_pct = 0.05                    # per side, % (Binance USD-M futures taker 0.05%)
 memory_trades = 10                # Laya reads the last 10 closed trades on the coin and their outcome
+memory_details = false            # also the open position's size/entry/stop and trade counts (hurt stocks)
 
 [crypto.strategy]                 # faster futures profile, tested on 9 unseen months (see README)
 signal = "laya"                   # "laya" or "votes" (the four trend votes; did better on crypto)
@@ -51,6 +52,7 @@ kline_interval = "1h"             # the candle size validated over a year (walkf
 fee_pct = 0.02                    # commission-free brokers; this approximates the spread
 poll_seconds = 30                 # Yahoo is unofficial, and hourly candles need no faster polling
 memory_trades = 3                 # Laya reads the last 3 closed trades on the stock and their outcome
+memory_details = false            # tested: +11.5% -> +1.1%, Laya became far too cautious
 
 [stocks.strategy]                 # a year of monthly out-of-sample tests (see README)
 signal = "laya"                   # "laya" or "votes"
