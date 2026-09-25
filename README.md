@@ -127,7 +127,17 @@ Set per market with `memory_trades` (defaults: crypto 10, stocks 3; 0 = off).
 | Stocks (8) | **+11.5%** | +1.1% | +1.9% | +0.3% |
 | Crypto (3) | −0.3% | −5.0% | +4.9% | **+6.3%** |
 
-On stocks, Laya reads the summary well, and the numbers and the detailed memory only make it hesitate. On crypto, the values add about 5 points, and with them the detailed memory helps too. Defaults: **crypto `format = "detailed"`, `memory_details = true`; stocks `good_bad` with the short memory**. The crypto numbers were measured on the earlier spot/4h setup; a confirmation on the futures setup is in `logs/`. Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
+On stocks, Laya reads the summary well, and the numbers and the detailed memory only make it hesitate. On crypto, the values add about 5 points, and with them the detailed memory helps too. Defaults: **crypto `format = "detailed"`, `memory_details = true`; stocks `good_bad` with the short memory**. Confirmed on the new crypto futures setup (1×, 2h cooldown), same 9 months:
+
+| Crypto, futures setup | Compounded | Worst month | Worst drawdown |
+|---|---|---|---|
+| Current wording, no memory | +12.1% | −4.8% | −17.1% |
+| Current wording + memory | −11.9% | −7.7% | −13.2% |
+| Detailed wording, no memory | +28.4% | −5.0% | −14.8% |
+| **Detailed wording + detailed memory (default)** | **+26.1%** | **−4.4%** | **−10.2%** |
+| Buy & hold | −8.1% | −29.8% | – |
+
+**How much to trust single numbers:** the same "current wording, no memory" futures setup made +6.4% in a run a few hours earlier and +12.1% here. The only difference was that the test months started a few hours later. Single results are fragile. What held in every run is the *ordering*: on crypto the values help, and memory without them hurts. Because Laya's answer now depends on the account's own history, backtests ask Laya during the simulation instead of precomputing it.
 
 Tested on 9 unseen months (a year of 1h candles; `walkforward.py --rolling --no-search --variants memory`):
 
