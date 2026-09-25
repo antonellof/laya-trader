@@ -564,28 +564,82 @@ def headlines(coins, url="https://coinjournal.net/news/feed/", per_coin=3):
     return found
 
 
-def load_agent(model):
-    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
-    from laya_mlx import Agent
+class LayaRuntime:
+    """One interface over two runtimes with the same weights and output format:
 
-    print(f"Loading {model} (FP16, MLX)...", file=sys.stderr)
-    agent = Agent(model, dtype="float16", device="gpu", batch_size=1)
-    agent.predict("warmup", {"q": {"type": "noul", "instructions": QUESTION}})
-    return agent
+    mlx    laya-mlx on Apple Silicon (fast, ~15 ms per question)
+    torch  upstream Laya (PyTorch) anywhere else, e.g. a Linux server on CPU
+    """
+
+    def __init__(self, backend, agent):
+        self.backend, self.agent = backend, agent
+        self.batch_size = getattr(agent, "batch_size", None)
+
+    def predict(self, state, questions):
+        if self.backend == "mlx":
+            self.agent.batch_size = self.batch_size or self.agent.batch_size
+            return self.agent.predict(state, questions)
+        return self.agent.system_one(state, questions)
+
+    def encoder_ids(self, state, questions):
+        """The token ids the encoder reads for the first question."""
+        if self.backend == "mlx":
+            return self.agent.prepare(state, questions)[0][0]["ids"]
+        internal = {qid: self.agent._to_internal(q) for qid, q in questions.items()}
+        return self.agent._encode_state(state, list(questions), internal)[0]["ids"]
+
+    def decode(self, ids):
+        if self.backend == "mlx":
+            return self.agent.tok.backend.decode(ids, skip_special_tokens=False)
+        return self.agent.tok.decode(ids, skip_special_tokens=False)
+
+
+def mlx_available():
+    return sys.platform == "darwin" and os.uname().machine == "arm64"
+
+
+def load_agent(model, torch_model="convaiinnovations/laya", torch_subfolder="multilingual"):
+    """MLX on Apple Silicon, upstream PyTorch Laya elsewhere (or when LAYA_BACKEND=torch)."""
+    os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
+    backend = os.environ.get("LAYA_BACKEND") or ("mlx" if mlx_available() else "torch")
+    if backend == "mlx":
+        from laya_mlx import Agent
+
+        print(f"Loading {model} (FP16, MLX)...", file=sys.stderr)
+        laya = LayaRuntime("mlx", Agent(model, dtype="float16", device="gpu", batch_size=1))
+    else:
+        import laya as upstream
+
+        print(f"Loading {torch_model}/{torch_subfolder} (PyTorch, CPU)...", file=sys.stderr)
+        laya = LayaRuntime(
+            "torch", upstream.load(torch_model, device="cpu", subfolder=torch_subfolder)
+        )
+    laya.predict("warmup", {"q": {"type": "noul", "instructions": QUESTION}})
+    return laya
+
+
+def agent_from_config(config):
+    """Load Laya with the model settings in config.toml ([model] section, or the old
+    top-level `model` key for the MLX checkpoint)."""
+    section = config.get("model_backends", {})
+    return load_agent(
+        config["model"],
+        section.get("torch_model", "convaiinnovations/laya"),
+        section.get("torch_subfolder", "multilingual"),
+    )
 
 
 def ask_laya(agent, state, question=QUESTION):
     """Ask the question and keep the whole exchange: the request as sent, the token
     sequence the encoder actually reads (decoded back to text), and the raw answer."""
     questions = {"q": {"type": "noul", "instructions": question}}
-    items, _ = agent.prepare(state, questions)
-    ids = items[0]["ids"]
+    ids = agent.encoder_ids(state, questions)
     output = agent.predict(state, questions)
     answer = output["answers"]["q"]
     return {
         "p": answer["noul"],
         "request": {"state": state, "questions": questions},
-        "encoder_input": agent.tok.backend.decode(ids, skip_special_tokens=False),
+        "encoder_input": agent.decode(ids),
         "tokens": len(ids),
         "answer": answer,
     }

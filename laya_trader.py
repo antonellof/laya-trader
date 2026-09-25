@@ -25,12 +25,12 @@ from backtest import memory_of, paper_of, prompt_of, setup_text
 from core import (
     Account,
     Cache,
+    agent_from_config,
     ask_laya,
     compute_signals,
     describe,
     explain,
     funding_times_between,
-    load_agent,
     memory_text,
     with_memory,
 )
@@ -217,7 +217,10 @@ class BacktestRunner:
         }
 
 
-def serve(live, port, log_path=None, runner=None):
+def serve(live, port, log_path=None, runner=None, host="127.0.0.1", public=False):
+    """public=True: a read-only dashboard for a shared host. Nobody can start backtests,
+    and the page hides the Run button (see /backtest/status)."""
+
     class Handler(BaseHTTPRequestHandler):
         def reply(self, body, kind, code=200, extra=()):
             self.send_response(code)
@@ -254,7 +257,10 @@ def serve(live, port, log_path=None, runner=None):
                 else:
                     self.reply(json.dumps(row).encode(), "application/json")
             elif path == "/backtest/status" and runner:
-                self.reply(json.dumps(runner.status()).encode(), "application/json")
+                status = {**runner.status(), "readonly": public}
+                if public:
+                    status.pop("output", None)
+                self.reply(json.dumps(status).encode(), "application/json")
             else:
                 self.send_error(404)
 
@@ -262,6 +268,9 @@ def serve(live, port, log_path=None, runner=None):
             query = parse_qs(urlsplit(self.path).query)
             if urlsplit(self.path).path != "/backtest/run" or not runner:
                 self.send_error(404)
+                return
+            if public:
+                self.send_error(403, "read-only dashboard")
                 return
             try:
                 days = min(max(float(query.get("days", ["7"])[0]), 0.05), 55)
@@ -280,7 +289,7 @@ def serve(live, port, log_path=None, runner=None):
             pass
 
     try:
-        server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
+        server = ThreadingHTTPServer((host, port), Handler)
     except OSError as error:
         if error.errno not in (48, 98):  # address already in use (macOS, Linux)
             raise
@@ -433,6 +442,18 @@ def main():
     )
     parser.add_argument("--no-log", action="store_true", help="Do not save decisions")
     parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default="127.0.0.1", help="0.0.0.0 to serve other machines")
+    parser.add_argument(
+        "--public", action="store_true", help="Read-only dashboard: no backtest runs from the page"
+    )
+    parser.add_argument("--interval", type=float, help="Seconds between rounds (overrides config)")
+    parser.add_argument(
+        "--backtest-every-hours",
+        type=float,
+        default=0,
+        help="Refresh the backtest report at startup and then every N hours (0 = off)",
+    )
+    parser.add_argument("--backtest-days", type=float, default=30)
     parser.add_argument("--no-dashboard", action="store_true")
     parser.add_argument("--no-open", action="store_true", help="Do not open the browser")
     args = parser.parse_args()
@@ -440,7 +461,7 @@ def main():
     markets = load_markets(config)
     question, fmt = prompt_of(config)
 
-    laya = Laya(load_agent(config["model"]), question)
+    laya = Laya(agent_from_config(config), question)
     cache, live = Cache(), Live(config, markets)
     accounts = {
         f"{m.kind}:{s}": Account(
@@ -458,7 +479,23 @@ def main():
         log = args.log.open("a")
         print(f"Saving decisions to {args.log}", file=sys.stderr)
     if not args.no_dashboard:
-        serve(live, args.port, None if args.no_log else args.log, BacktestRunner(args.config))
+        runner = BacktestRunner(args.config)
+        serve(
+            live,
+            args.port,
+            None if args.no_log else args.log,
+            runner,
+            host=args.host,
+            public=args.public,
+        )
+        if args.backtest_every_hours:
+
+            def refresh():  # a daily backtest report, in its own process
+                while True:
+                    runner.start(args.backtest_days)
+                    time.sleep(args.backtest_every_hours * 3600)
+
+            threading.Thread(target=refresh, daemon=True).start()
         url = f"http://127.0.0.1:{args.port}"
         print(f"Dashboard: {url}  ·  backtest: {url}/backtest", file=sys.stderr)
         if not args.no_open:
@@ -474,7 +511,8 @@ def main():
                 except Exception as error:  # A network hiccup skips one round, not the run.
                     print(f"round skipped: {error}", file=sys.stderr)
                 done += 1
-                time.sleep(max(0.0, config["interval_seconds"] - (time.monotonic() - tick)))
+                interval = args.interval or config["interval_seconds"]
+                time.sleep(max(0.0, interval - (time.monotonic() - tick)))
     except KeyboardInterrupt:
         pass
     finally:

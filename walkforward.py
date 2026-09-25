@@ -29,7 +29,7 @@ from backtest import (
     prompt_of,
     simulate,
 )
-from core import load_agent
+from core import agent_from_config
 from markets import INTERVAL_MS, load_markets
 
 HERE = Path(__file__).resolve().parent
@@ -619,7 +619,7 @@ def main():
     markets = load_markets(config)
     if args.markets:
         markets = [m for m in markets if m.kind in {x.strip() for x in args.markets.split(",")}]
-    agent, memo, prompt = load_agent(config["model"]), {}, prompt_of(config)
+    agent, memo, prompt = agent_from_config(config), {}, prompt_of(config)
     end_ms = int(time.time() * 1000)
     if args.rolling:
         for market in markets:

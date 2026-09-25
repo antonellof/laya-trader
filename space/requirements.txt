@@ -1,0 +1,2 @@
+# Hugging Face Space (Linux CPU): the PyTorch Laya runtime instead of laya-mlx.
+laya==0.3.20

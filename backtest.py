@@ -22,12 +22,12 @@ from pathlib import Path
 from core import (
     QUESTION,
     Account,
+    agent_from_config,
     ask_laya,
     compute_signals,
     describe,
     explain,
     funding_times_between,
-    load_agent,
     memory_text,
     with_memory,
 )
@@ -282,7 +282,7 @@ def main():
     end_ms = int(end.timestamp() * 1000)
     start_ms = int(end_ms - args.days * 86_400_000)
 
-    agent, memo, prompt = load_agent(config["model"]), {}, prompt_of(config)
+    agent, memo, prompt = agent_from_config(config), {}, prompt_of(config)
     started = time.perf_counter()
     assets, market_info = {}, {}
     for market in markets:

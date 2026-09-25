@@ -16,7 +16,7 @@ import time
 import tomllib
 from pathlib import Path
 
-from core import PROMPT_FORMATS, compute_signals, describe, load_agent
+from core import PROMPT_FORMATS, agent_from_config, compute_signals, describe
 from markets import INTERVAL_MS, load_markets
 
 HERE = Path(__file__).resolve().parent
@@ -106,7 +106,7 @@ def main():
     parser.add_argument("--stocks-days", type=float, default=55)
     args = parser.parse_args()
     config = tomllib.loads(args.config.read_text())
-    agent = load_agent(config["model"])
+    agent = agent_from_config(config)
     agent.batch_size = len(QUESTIONS)
     end_ms = int(time.time() * 1000)
     results = {}

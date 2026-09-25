@@ -10,6 +10,7 @@ Stocks: Yahoo Finance's public chart API (unofficial, no key; polled politely), 
 """
 
 import re
+import sys
 import time
 from bisect import bisect_right
 from datetime import datetime, timezone
@@ -45,12 +46,27 @@ class Candles:
 class Crypto:
     kind, label, noun = "crypto", "Crypto", "Crypto"
     SPOT, FUTURES = "https://api.binance.com", "https://fapi.binance.com"
+    # Binance blocks some regions (HTTP 451, e.g. US servers). Its public market-data
+    # mirror serves the same spot candles; futures statistics have no mirror, so there
+    # they're simply missing and the sentence leaves them out.
+    SPOT_MIRROR = "https://data-api.binance.vision"
     FUTURES_HISTORY_MS = 29 * DAY_MS  # Binance keeps futures/data statistics for 30 days
 
     def __init__(self, cfg, refresh):
         self.cfg, self.refresh = cfg, refresh
         self.symbols = [s.upper() for s in cfg["symbols"]]
         self.interval = cfg["kline_interval"]
+        self.spot = self.SPOT
+
+    def _spot(self, path, timeout=3):
+        try:
+            return get_json(f"{self.spot}{path}", timeout=timeout)
+        except RuntimeError as error:
+            if self.spot == self.SPOT and ("HTTP 451" in str(error) or "HTTP 403" in str(error)):
+                print("Binance API blocked here; using the market-data mirror", file=sys.stderr)
+                self.spot = self.SPOT_MIRROR
+                return get_json(f"{self.spot}{path}", timeout=timeout)
+            raise
 
     def is_open(self, now=None):
         return True
@@ -58,9 +74,7 @@ class Crypto:
     # Live ---------------------------------------------------------------------------------
 
     def _candles(self, symbol, interval, limit):
-        return get_json(
-            f"{self.SPOT}/api/v3/klines?symbol={symbol}USDT&interval={interval}&limit={limit}"
-        )
+        return self._spot(f"/api/v3/klines?symbol={symbol}USDT&interval={interval}&limit={limit}")
 
     def _stats(self, symbol, path, field):
         rows = get_json(
@@ -136,8 +150,8 @@ class Crypto:
     def _history(self, symbol, interval, start_ms, end_ms):
         rows = []
         while start_ms < end_ms:
-            batch = get_json(
-                f"{self.SPOT}/api/v3/klines?symbol={symbol}USDT&interval={interval}"
+            batch = self._spot(
+                f"/api/v3/klines?symbol={symbol}USDT&interval={interval}"
                 f"&startTime={start_ms}&endTime={end_ms}&limit=1000",
                 timeout=10,
             )

@@ -575,6 +575,13 @@ function renderSummary() {
 async function runnerStatus(first) {
   let st;
   try { st = await (await fetch("/backtest/status", { cache: "no-store" })).json(); } catch (e) { return; }
+  if (st.readonly) {  // public, read-only dashboard: no runs from the page
+    $("run").hidden = true; $("days").disabled = true; $("run-markets").disabled = true;
+    $("run-status").textContent = st.running ? "refreshing the report…" : (st.report_time ? `report from ${new Date(st.report_time * 1000).toLocaleString()} · refreshed daily` : "the first report is being built");
+    if (st.running) setTimeout(() => runnerStatus(false), 5000);
+    else if (!first && st.exit_code === 0) location.reload();  // a new report is ready
+    return;
+  }
   $("run").disabled = st.running;
   const out = st.output || [];
   if (st.running) {
