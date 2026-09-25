@@ -44,14 +44,17 @@ button { font: inherit; color: inherit; }
 .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; min-width: 0; }
 .kpi b { display: block; font-size: 17px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .kpi span { color: var(--muted); font-size: 11.5px; }
-.setup { margin-top: 8px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 10px; margin-top: 14px; }
-.tile { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; min-width: 0; display: grid; gap: 4px; }
+.setup { margin-top: 10px; display: grid; gap: 2px; }
+.filterbar { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center; margin-top: 16px; }
+.tag { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); background: var(--chip); border-radius: 4px; padding: 1px 5px; margin-left: 6px; vertical-align: 2px; }
+.tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 10px; margin-top: 10px; }
+.tile { text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; cursor: pointer; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 4px; overflow: hidden; }
 .tile:hover { border-color: var(--muted); }
 .tile[aria-selected="true"] { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-.tile .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.tile .row { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; min-width: 0; }
 .tile .sym { font-weight: 700; font-size: 14.5px; }
-.tile .px { font-variant-numeric: tabular-nums; font-size: 13px; white-space: nowrap; }
+.tile .sym { white-space: nowrap; }
+.tile .px { font-variant-numeric: tabular-nums; font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 .tile canvas { width: 100%; height: 34px; display: block; }
 .minigauge { position: relative; height: 5px; border-radius: 3px; background: linear-gradient(90deg, rgba(208,52,44,.35), var(--chip) 45%, rgba(31,138,76,.35)); }
 .minigauge i { position: absolute; top: -3px; width: 3px; height: 11px; border-radius: 2px; background: var(--laya); transform: translateX(-1.5px); }
@@ -128,7 +131,6 @@ a.dl { font-size: 12px; color: var(--muted); }
   <div class="top">
     <div class="brand"><h1>Laya <span>Trader</span></h1><span class="meta" id="subtitle"></span></div>
     <nav class="pills" id="nav" hidden><a href="/" data-p="live">Live</a><a href="/backtest" data-p="backtest">Backtest</a></nav>
-    <div class="pills" id="tabs" role="tablist" aria-label="Market"></div>
     <span class="meta" id="timing"></span>
   </div>
 
@@ -144,8 +146,12 @@ a.dl { font-size: 12px; color: var(--muted); }
   </section>
 
   <div class="marketbar" id="kpis"></div>
-  <div class="setup meta" id="setup"></div>
+  <div class="filterbar">
+    <div class="pills" id="tabs" role="tablist" aria-label="Show"></div>
+    <span class="meta" id="filter-note"></span>
+  </div>
   <div class="tiles" id="tiles" role="listbox" aria-label="Assets"></div>
+  <div class="setup meta" id="setup"></div>
 
   <section class="card" id="detail"><div class="empty">Loading…</div></section>
   <section class="card" id="summary" hidden>
@@ -175,19 +181,19 @@ const served = location.protocol.startsWith("http");
 const backtestPage = location.pathname.startsWith("/backtest") || (DATA && DATA.mode === "backtest");
 
 let state = null;
-const ui = { market: null, asset: null, filter: null, open: new Set(), details: {}, logKey: null, hover: null };
+const ui = { market: "all", asset: null, filter: null, open: new Set(), details: {}, logKey: null, hover: null };
 
-// Routing: #market/SYMBOL keeps the selection across reloads and shareable.
+// Routing: #view/asset (e.g. #all/stocks:AAPL) keeps the selection across reloads.
 function readHash() {
-  const [m, s] = decodeURIComponent(location.hash.slice(1)).split("/");
-  if (m) ui.market = m;
-  if (m && s) ui.asset = `${m}:${s}`;
+  const [view, asset] = decodeURIComponent(location.hash.slice(1)).split("/");
+  if (view) ui.market = view;
+  if (asset) ui.asset = asset.includes(":") ? asset : `${view}:${asset}`;  // older #stocks/AAPL links
 }
 function writeHash() {
-  const sym = ui.asset ? ui.asset.split(":")[1] : "";
-  history.replaceState(null, "", `#${ui.market}${sym ? "/" + sym : ""}`);
+  history.replaceState(null, "", `#${ui.market}${ui.asset ? "/" + ui.asset : ""}`);
 }
-function assetsOf(market) { return Object.entries(state.assets).filter(([, a]) => a.market === market); }
+// The filter: "all" shows every market, otherwise one market.
+function assetsOf(view) { return Object.entries(state.assets).filter(([, a]) => view === "all" || a.market === view); }
 
 // --- Charts ------------------------------------------------------------------------------------
 function setup(canvas) {
@@ -249,17 +255,27 @@ function plot(canvas, xs, series, opts = {}) {
 
 // --- Tabs, KPIs, tiles ---------------------------------------------------------------------------
 function renderTabs() {
-  $("tabs").innerHTML = Object.entries(state.markets).map(([k, m]) => {
-    const dot = state.mode === "live" ? `<i class="dot${m.open ? " on" : ""}" title="${m.open ? "market open" : "market closed"}"></i>` : "";
-    return `<button role="tab" data-m="${k}" aria-selected="${k === ui.market}">${dot}${esc(m.label)} <span class="count">${assetsOf(k).length}</span></button>`;
-  }).join("");
+  const live = state.mode === "live";
+  const dot = (open) => live ? `<i class="dot${open ? " on" : ""}" title="${open ? "market open" : "market closed"}"></i>` : "";
+  const anyOpen = Object.values(state.markets).some((m) => m.open);
+  const views = [["all", "All", anyOpen], ...Object.entries(state.markets).map(([k, m]) => [k, m.label, m.open])];
+  // Rebuild only when something changed, so a click never lands on a replaced button.
+  const key = JSON.stringify([ui.market, views, Object.keys(state.assets).length]);
+  if ($("tabs").dataset.key === key) return;
+  $("tabs").dataset.key = key;
+  $("tabs").innerHTML = views.map(([k, label, open]) =>
+    `<button role="tab" data-m="${k}" aria-selected="${k === ui.market}">${dot(open)}${esc(label)} <span class="count">${assetsOf(k).length}</span></button>`).join("");
+  $("filter-note").textContent = live
+    ? Object.values(state.markets).map((m) => `${m.label} ${m.open ? "open" : "closed"}`).join(" · ")
+    : "";
   $("tabs").querySelectorAll("button").forEach((b) => b.onclick = () => { ui.market = b.dataset.m; ui.asset = null; ui.logKey = null; ui.open.clear(); render(); });
 }
 
 function equityNow(a) { const p = a.points[a.points.length - 1]; return p ? p[3] : state.capital; }
 
 function renderKpis() {
-  const m = state.markets[ui.market], list = assetsOf(ui.market).map(([, a]) => a);
+  const list = assetsOf(ui.market).map(([, a]) => a);
+  const shown = ui.market === "all" ? Object.values(state.markets) : [state.markets[ui.market]];
   const capital = state.capital * list.length;
   const tiles = (rows) => rows.map(([v, l]) => `<div class="kpi"><b>${v}</b><span>${l}</span></div>`).join("");
   if (state.mode === "backtest") {
@@ -276,20 +292,22 @@ function renderKpis() {
     const trades = list.reduce((s, a) => s + a.trades.length, 0);
     $("kpis").innerHTML = tiles([
       [fmt(equity), `paper equity (of ${fmt(capital, 0)})`], [pct(capital ? (equity / capital - 1) * 100 : 0), "session P&L"],
-      [`${open} / ${list.length}`, "open positions"], [trades, "trades this session"], [m.open ? "open" : "closed", "market"],
+      [`${open} / ${list.length}`, "open positions"], [trades, "trades this session"],
+      [`${shown.filter((m) => m.open).length} / ${shown.length}`, "markets open"],
     ]);
   }
-  $("setup").textContent = `Strategy: ${m.setup} · thresholds ${m.rules.enter_below} / ${m.rules.enter_above} · stop ${m.rules.stop_loss_atr || "none"} · target ${m.rules.take_profit_atr || "none"} · fee ${m.fee_pct}% per side`;
+  $("setup").innerHTML = shown.map((m) => `<div>${shown.length > 1 ? `<b>${esc(m.label)}</b> · ` : "Strategy: "}${esc(m.setup)} · thresholds ${m.rules.enter_below} / ${m.rules.enter_above} · signal ${esc(m.rules.signal || "laya")} · fee ${m.fee_pct}% per side</div>`).join("");
 }
 
 function renderTiles() {
   const list = assetsOf(ui.market);
-  if (!ui.asset || !state.assets[ui.asset] || state.assets[ui.asset].market !== ui.market) ui.asset = list.length ? list[0][0] : null;
-  const el = $("tiles"), key = list.map(([id]) => id).join(",");
+  if (!list.some(([id]) => id === ui.asset)) ui.asset = list.length ? list[0][0] : null;
+  const all = ui.market === "all";
+  const el = $("tiles"), key = `${all}:` + list.map(([id]) => id).join(",");
   if (el.dataset.key !== key) {
     el.dataset.key = key;
     el.innerHTML = list.map(([id, a]) => `<button class="tile" role="option" data-id="${id}">
-      <div class="row"><span class="sym">${esc(a.symbol)}</span><span class="px" data-k="px">–</span></div>
+      <div class="row"><span class="sym">${esc(a.symbol)}${all ? `<span class="tag">${a.market === "stocks" ? "stock" : esc(a.market)}</span>` : ""}</span><span class="px" data-k="px">–</span></div>
       <canvas data-h="34"></canvas>
       <div class="minigauge" title="P(bullish)"><i data-k="g"></i></div>
       <div class="row"><span data-k="act"></span><span class="meta" data-k="eq"></span></div></button>`).join("");
@@ -493,7 +511,7 @@ function detailHtml(r, d) {
 function renderSummary() {
   $("summary").hidden = false;
   $("summary-rows").innerHTML = assetsOf(ui.market).flatMap(([, a]) =>
-    Object.entries(a.summary).map(([name, r]) => `<tr><td>${esc(a.symbol)}</td><td>${name}</td>
+    Object.entries(a.summary).map(([name, r]) => `<tr><td>${esc(a.symbol)}${ui.market === "all" ? ` <span class="tag">${a.market === "stocks" ? "stock" : esc(a.market)}</span>` : ""}</td><td>${name}</td>
       <td class="${r.return_pct >= 0 ? "pos" : "neg"}">${pct(r.return_pct)}</td><td>${pct(r.max_drawdown_pct)}</td>
       <td>${r.trades}</td><td>${r.win_rate == null ? "–" : fmt(r.win_rate * 100, 0) + "%"}</td></tr>`)).join("");
 }
@@ -515,7 +533,7 @@ async function runnerStatus(first) {
 // --- Render loop -----------------------------------------------------------------------------------------
 function render() {
   if (!state.markets) { $("detail").innerHTML = `<div class="empty">This report was made by an older version. Run a new backtest above.</div>`; return; }
-  if (!ui.market || !state.markets[ui.market]) ui.market = Object.keys(state.markets)[0];
+  if (ui.market !== "all" && !state.markets[ui.market]) ui.market = "all";
   $("subtitle").textContent = state.title;
   if (state.timing) $("timing").textContent = `fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms (${state.timing.laya_calls} new)`;
   if (state.prompt) $("prompt").textContent = `Question asked: “${state.prompt.question}” (${state.prompt.format}).`;

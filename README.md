@@ -161,9 +161,10 @@ On restart, the dashboard reloads that day's history.
 
 `./run.sh` opens **http://127.0.0.1:8765**. The page updates every second.
 
-- **Market tabs** (Crypto / Stocks): each has a live dot when its market is open.
-- **Market bar:** paper equity, session P&L, open positions, trades, and the strategy in plain words.
-- **Asset tiles:** price and change, a sparkline, a P(bullish) gauge, the current action or position, and equity. Click one to open it. The URL (`#stocks/AAPL`) keeps the selection.
+- **Summary bar:** paper equity, session P&L, open positions, trades, and how many markets are open, for whatever the filter shows.
+- **Filter, right above the asset list:** **All** (the default: crypto and stocks together), **Crypto** or **Stocks**. Each option shows a count and a live dot when its market is open.
+- **Asset tiles:** price and change, a sparkline, a P(bullish) gauge, the current action or position, and equity. Under All, each tile is tagged *crypto* or *stock*. Click a tile to open it. The URL (`#all/stocks:AAPL`) keeps the filter and the selection.
+- **Strategy line** under the tiles: each shown market's strategy in plain words.
 - **Detail panel:**
   - price chart with ▲ long, ▼ short and ● close markers, and hover to inspect any point
   - P(bullish) against the thresholds
