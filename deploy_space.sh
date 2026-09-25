@@ -10,6 +10,8 @@ trap 'rm -rf "$STAGE"' EXIT
 
 cp config.toml core.py markets.py laya_trader.py backtest.py dashboard.html "$STAGE"/
 cp space/app.py space/requirements.txt space/README.md "$STAGE"/
+# The latest local backtest, shown until the Space builds its own (it runs daily).
+[ -f backtest.html ] && cp backtest.html "$STAGE"/
 
 uv run hf repos create "$SPACE" --type space --sdk gradio --flavor zero-a10g --public --exist-ok
 uv run hf upload "$SPACE" "$STAGE" . --repo-type space --commit-message "Deploy laya-trader"

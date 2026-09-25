@@ -2,6 +2,8 @@
 
 Paper trading with a small local AI model. Every second, [Laya MLX](https://github.com/mizorewww/laya-mlx) reads market signals for **crypto** (Binance) and **S&P 500 stocks** (Yahoo Finance) and answers one question: *is the short-term outlook bullish?* A strategy turns that probability into **LONG**, **SHORT**, **CLOSE** or **HOLD** on a paper account. A live dashboard shows every decision and exactly what Laya read.
 
+**[▶ Live demo on Hugging Face](https://huggingface.co/spaces/antonellof/laya-trader)**: the dashboard running in the cloud, live trades and a 30-day backtest refreshed daily.
+
 **Paper trading only.** No API keys, no orders, nothing is sent to an exchange or broker. Not financial advice.
 
 ![Live dashboard: crypto and stocks together, with P(bullish), action and paper equity per asset](docs/screenshots/live-overview.png)
@@ -9,7 +11,7 @@ Paper trading with a small local AI model. Every second, [Laya MLX](https://gith
 ## Contents
 
 - [What it is](#what-it-is)
-- [Quick start](#quick-start)
+- [Quick start](#quick-start) · [online demo](#online-demo-hugging-face-space)
 - [How it works](#how-it-works)
 - [Dashboard](#dashboard)
 - [Configuration](#configuration)
@@ -48,9 +50,9 @@ uv run python backtest.py --days 30 --markets stocks
 
 ### Online demo (Hugging Face Space)
 
-**Live demo: [huggingface.co/spaces/antonellof/laya-trader](https://huggingface.co/spaces/antonellof/laya-trader)** (read-only).
+Live: **[huggingface.co/spaces/antonellof/laya-trader](https://huggingface.co/spaces/antonellof/laya-trader)** (read-only; the Backtest tab shows the latest daily report).
 
-`./deploy_space.sh` publishes a read-only copy of the dashboard to a free Hugging Face Space (Gradio SDK on ZeroGPU hardware; `space/app.py` launches Gradio and routes the dashboard through its server). There, Laya runs on the CPU with its [PyTorch runtime](https://github.com/NandhaKishorM/laya) and the same weights, one round every 10 seconds, and the Space rebuilds a 30-day backtest daily. Needs `uv run hf auth login` with a write token. Nothing persists: the paper account restarts with the Space, which sleeps after two days without visitors. On Linux, `core.py` picks the PyTorch runtime automatically (`LAYA_BACKEND=torch` or `mlx` to force one).
+`./deploy_space.sh` publishes a read-only copy of the dashboard to a free Hugging Face Space (Gradio SDK on ZeroGPU hardware; `space/app.py` launches Gradio and routes the dashboard through its server). There, Laya runs on the CPU with its [PyTorch runtime](https://github.com/NandhaKishorM/laya) and the same weights, one round every 10 seconds, and the Space rebuilds a 30-day backtest daily (the deploy uploads your latest local `backtest.html` to show until then). Needs `uv run hf auth login` with a write token. Nothing persists: the paper account restarts with the Space, which sleeps after two days without visitors. On Linux, `core.py` picks the PyTorch runtime automatically (`LAYA_BACKEND=torch` or `mlx` to force one).
 
 ## How it works
 

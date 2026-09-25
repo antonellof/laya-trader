@@ -602,8 +602,10 @@ function render() {
   if (state.mode === "live") {
     $("status-dot").hidden = false;
     $("status-dot").className = "dot on";
+    const every = state.interval_seconds >= 2 ? ` · every ${fmt(state.interval_seconds, 0)} s` : "";
+    const updated = state.last_ms ? ` · updated ${new Date(state.last_ms).toLocaleTimeString()}` : "";
     $("timing").textContent = state.timing
-      ? `Live · fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms`
+      ? `Live${every}${updated} · fetch ${fmt(state.timing.fetch_ms, 0)} ms · Laya ${fmt(state.timing.laya_ms, 0)} ms`
       : "Live";
   } else {
     $("timing").textContent = `${count} assets · ${state.days ?? "–"} days`;

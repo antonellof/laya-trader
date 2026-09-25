@@ -7,6 +7,7 @@ Open http://127.0.0.1:8765 for the live dashboard (backtests at /backtest).
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -32,6 +33,7 @@ from core import (
     explain,
     funding_times_between,
     memory_text,
+    torch_threads,
     with_memory,
 )
 from markets import INTERVAL_MS, load_markets
@@ -193,8 +195,15 @@ class BacktestRunner:
             ]
             if markets:
                 command += ["--markets", markets]
+            # Lower priority: on a small CPU the backtest would otherwise slow the live rounds.
             self.process = subprocess.Popen(
-                command, cwd=HERE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True
+                command,
+                cwd=HERE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                preexec_fn=(lambda: os.nice(10)) if hasattr(os, "nice") else None,
+                env={**os.environ, "LAYA_THREADS": str(max(1, torch_threads() // 2))},
             )
             threading.Thread(target=self._read, args=(self.process,), daemon=True).start()
             return True

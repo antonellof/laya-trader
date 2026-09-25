@@ -598,6 +598,25 @@ def mlx_available():
     return sys.platform == "darwin" and os.uname().machine == "arm64"
 
 
+def torch_threads():
+    """CPU threads for PyTorch: LAYA_THREADS, else the container's CPU quota. In a container
+    os.cpu_count() reports the host's CPUs, and more threads than the quota allows throttle."""
+    if os.environ.get("LAYA_THREADS"):
+        return max(1, int(os.environ["LAYA_THREADS"]))
+    cpus = os.cpu_count() or 1
+    try:
+        quota, period = open("/sys/fs/cgroup/cpu.max").read().split()
+        if quota != "max":
+            cpus = min(cpus, max(1, int(int(quota) / int(period))))
+    except (OSError, ValueError):
+        pass
+    try:
+        cpus = min(cpus, len(os.sched_getaffinity(0)))
+    except AttributeError:
+        pass
+    return min(cpus, 16)
+
+
 def load_agent(model, torch_model="convaiinnovations/laya", torch_subfolder="multilingual"):
     """MLX on Apple Silicon, upstream PyTorch Laya elsewhere (or when LAYA_BACKEND=torch)."""
     os.environ.setdefault("HF_HUB_DISABLE_TELEMETRY", "1")
@@ -609,8 +628,14 @@ def load_agent(model, torch_model="convaiinnovations/laya", torch_subfolder="mul
         laya = LayaRuntime("mlx", Agent(model, dtype="float16", device="gpu", batch_size=1))
     else:
         import laya as upstream
+        import torch
 
-        print(f"Loading {torch_model}/{torch_subfolder} (PyTorch, CPU)...", file=sys.stderr)
+        torch.set_num_threads(torch_threads())
+        print(
+            f"Loading {torch_model}/{torch_subfolder} (PyTorch, CPU, "
+            f"{torch.get_num_threads()} threads of {os.cpu_count()} CPUs)...",
+            file=sys.stderr,
+        )
         laya = LayaRuntime(
             "torch", upstream.load(torch_model, device="cpu", subfolder=torch_subfolder)
         )
